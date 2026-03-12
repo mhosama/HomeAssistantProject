@@ -1,0 +1,21 @@
+# Credentials - NEVER commit
+deploy/config.ps1
+
+# State files (runtime, recreated automatically)
+deploy/.vision_state.json
+deploy/.ezviz_vision_state.json
+
+# Logs
+deploy/logs/
+
+# Temp/utility scripts (not part of the project)
+deploy/deploy-to-server.ps1
+deploy/deploy-startup-task.ps1
+deploy/check-tasks.ps1
+deploy/test-check.ps1
+
+# Snapshot images
+*.jpg
+
+# Claude Code local settings
+.claude/
