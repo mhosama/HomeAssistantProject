@@ -6,9 +6,13 @@
     For cameras that only expose RTSP streams (no Tapo management API),
     use HA's built-in Generic Camera integration.
 
-    Each camera gets a config flow with the RTSP stream URL.
-    Credentials are embedded in the URL (not in the username/password fields)
-    since these cameras use URL-based auth.
+    NOTE: The Generic Camera config flow validates RTSP connectivity and
+    times out if the stream is behind a NAT gateway (.2). In that case,
+    add cameras directly to configuration.yaml using the ffmpeg platform
+    via Samba share (\\192.168.0.239\config\configuration.yaml).
+
+    This script is kept as reference for the camera list and as a fallback
+    for cameras with directly reachable RTSP streams.
 
 .EXAMPLE
     .\07c-Setup-RtspCameras.ps1
@@ -31,6 +35,22 @@ $cameras = @(
     @{
         Name   = "Visitor Gate Camera"
         Stream = "rtsp://mhocontrol:T3rrabyte@192.168.0.2:5103/stream2"
+    },
+    @{
+        Name   = "Pool Camera"
+        Stream = "rtsp://mhocontrol:T3rrabyte@192.168.0.2:5104/stream2"
+    },
+    @{
+        Name   = "Garage Camera"
+        Stream = "rtsp://mhocontrol:T3rrabyte@192.168.0.2:5106/stream2"
+    },
+    @{
+        Name   = "Lounge Camera"
+        Stream = "rtsp://mhocontrol:T3rrabyte@192.168.0.2:5110/stream2"
+    },
+    @{
+        Name   = "Street Camera"
+        Stream = "rtsp://mhocontrol:T3rrabyte@192.168.0.2:5101/stream2"
     }
 )
 

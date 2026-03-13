@@ -45,20 +45,25 @@ Complete inventory of all devices, protocols, IP addresses, and integration meth
 
 ## Security Cameras (Tapo)
 
-> IPs are auto-discovered by `deploy/07b-Setup-TapoCameras.ps1` via network scan (ports 443 + 2020/ONVIF).
-> 6 cameras configured, 12 entities (HD + SD stream each).
+> 7 Tapo cameras configured via `tapo_control`, 14 entities (HD + SD stream each).
+> 6 RTSP cameras via Generic Camera integration (ffmpeg).
+> IPs updated 2026-03-13 via `deploy/13-Update-CameraIPs.ps1`.
 
 | Device | Location | Model | IP Address | Protocol | Integration | Status |
 |--------|----------|-------|------------|----------|-------------|--------|
-| Chickens | Chicken coop | Tapo | 192.168.0.101 | RTSP | HACS `tapo_control` | Configured |
-| Backyard Camera | Backyard | Tapo | 192.168.0.106 | RTSP | HACS `tapo_control` | Configured |
-| Back door Camera | Back door | Tapo | 192.168.0.111 | RTSP | HACS `tapo_control` | Configured |
-| Veggie Garden | Veggie garden | Tapo | 192.168.0.195 | RTSP | HACS `tapo_control` | Configured |
-| Dining Room Camera | Dining room | Tapo | 192.168.0.214 | RTSP | HACS `tapo_control` | Configured |
+| Chickens | Chicken coop | Tapo | 192.168.0.209 | RTSP | HACS `tapo_control` | Configured |
+| Backyard Camera | Backyard | Tapo | 192.168.0.113 | RTSP | HACS `tapo_control` | Configured |
+| Back door Camera | Back door | Tapo | 192.168.0.101 | RTSP | HACS `tapo_control` | Configured |
+| Veggie Garden | Veggie garden | Tapo | 192.168.0.106 | RTSP | HACS `tapo_control` | Configured |
+| Dining Room Camera | Dining room | Tapo | 192.168.0.191 | RTSP | HACS `tapo_control` | Configured |
 | Kitchen Camera | Kitchen | Tapo | 192.168.0.249 | RTSP | HACS `tapo_control` | Configured |
-| Unknown device | ? | ? | 192.168.0.102 | ? | - | Connection failed (ONVIF+443 open but not Tapo?) |
-| Main Gate Camera | Main gate | Tapo C310 | 192.168.0.2:5102 | RTSP only (LAN) | ffmpeg (YAML) | Configured |
-| Visitor Gate Camera | Visitor gate | Tapo C310 | 192.168.0.2:5103 | RTSP only (LAN) | ffmpeg (YAML) | Configured |
+| Lawn Camera | Lawn | Tapo | 192.168.0.102 | RTSP | HACS `tapo_control` | Configured |
+| Main Gate Camera | Main gate | Tapo C310 | 192.168.0.2:5102 | RTSP only (LAN) | Generic Camera (ffmpeg) | Configured |
+| Visitor Gate Camera | Visitor gate | Tapo C310 | 192.168.0.2:5103 | RTSP only (LAN) | Generic Camera (ffmpeg) | Configured |
+| Pool Camera | Pool | Tapo C310 | 192.168.0.2:5104 | RTSP only (LAN) | Generic Camera (ffmpeg) | Configured |
+| Garage Camera | Garage | Tapo C310 | 192.168.0.2:5106 | RTSP only (LAN) | Generic Camera (ffmpeg) | Configured |
+| Lounge Camera | Lounge | Tapo C310 | 192.168.0.2:5110 | RTSP only (LAN) | Generic Camera (ffmpeg) | Configured |
+| Street Camera | Street | Tapo C310 | 192.168.0.2:5101 | RTSP only (LAN) | Generic Camera (ffmpeg) | Configured |
 
 ## Farm Cameras (EZVIZ, 4G Cloud-Only)
 
@@ -113,13 +118,13 @@ Complete inventory of all devices, protocols, IP addresses, and integration meth
 | Windows Server (Hyper-V host) | 192.168.0.156 | Static |
 | Home Assistant VM | 192.168.0.239 | DHCP - reservation recommended |
 | Samsung TV | 192.168.0.27 | DHCP |
-| Chickens Camera | 192.168.0.101 | DHCP |
-| Unknown Device | 192.168.0.102 | ONVIF+443 open, not Tapo |
-| Backyard Camera | 192.168.0.106 | DHCP |
-| Back Door Camera | 192.168.0.111 | DHCP |
-| Veggie Garden Camera | 192.168.0.195 | DHCP |
-| Dining Room Camera | 192.168.0.214 | DHCP |
-| Kitchen Camera | 192.168.0.249 | DHCP |
-| Gate Camera Host (NVR?) | 192.168.0.2 | RTSP :5102 (Main), :5103 (Visitor) |
+| Gate/NVR Camera Host | 192.168.0.2 | RTSP :5101-5110 (6 cameras) |
+| Back Door Camera | 192.168.0.101 | DHCP (Tapo) |
+| Lawn Camera | 192.168.0.102 | DHCP (Tapo) |
+| Veggie Garden Camera | 192.168.0.106 | DHCP (Tapo) |
+| Backyard Camera | 192.168.0.113 | DHCP (Tapo) |
+| Dining Room Camera | 192.168.0.191 | DHCP (Tapo) |
+| Chickens Camera | 192.168.0.209 | DHCP (Tapo) |
+| Kitchen Camera | 192.168.0.249 | DHCP (Tapo) |
 
 > **Tip**: Use your router's DHCP client list to discover device IPs. Set DHCP reservations for cameras and HA VM.

@@ -18,17 +18,19 @@
   - [x] `deploy/06-Setup-News.ps1` - Full setup (automation + scripts + dashboard)
   - [x] `deploy/06a-Refresh-News.ps1` - Refreshes episode URL daily
   - [x] Set up Windows Scheduled Task `HA-RefreshNews` to run `06a-Refresh-News.ps1` daily at 04:30
-- [x] **Tapo Cameras** - 6 cameras configured via network scan (ports 443 + 2020/ONVIF)
-  - `deploy/07b-Setup-TapoCameras.ps1` - Scans subnet, discovers cameras, sets up via config flow
-  - Chickens (.101), Backyard (.106), Back door (.111), Veggie Garden (.195), Dining Room (.214), Kitchen (.249)
-  - 12 camera entities (HD + SD stream each)
-  - .102 has ONVIF+443 open but connection_failed (unknown device)
+- [x] **Tapo Cameras** - 7 cameras configured (IPs updated 2026-03-13)
+  - `deploy/13-Update-CameraIPs.ps1` - Deleted stale entries + recreated with new IPs
+  - Chickens (.209), Backyard (.113), Back door (.101), Veggie Garden (.106), Dining Room (.191), Kitchen (.249), Lawn (.102)
+  - 14 camera entities (HD + SD stream each)
   - [x] Camera feeds added to Security dashboard (Cameras tab) via `deploy/07d-Add-CameraDashboard.ps1`
   - [ ] Verify all streams load in HA dashboard
-  - [ ] Identify unknown device at 192.168.0.102
-  - [x] **RTSP gate cameras** (.2:5102 and .2:5103) - added via ffmpeg YAML in configuration.yaml
-    - Main Gate Camera (`camera.main_gate_camera`) and Visitor Gate Camera (`camera.visitor_gate_camera`)
-    - Generic Camera config flow timed out; ffmpeg platform in YAML bypasses validation
+  - [x] **RTSP cameras** - 6 cameras via Generic Camera (ffmpeg)
+    - Main Gate (.2:5102), Visitor Gate (.2:5103), Pool (.2:5104), Garage (.2:5106), Lounge (.2:5110), Street (.2:5101)
+    - `deploy/07c-Setup-RtspCameras.ps1` - updated with all 6 cameras
+  - [x] Run `deploy/13-Update-CameraIPs.ps1` to update Tapo entries (all 7 Tapo configured)
+  - [x] RTSP cameras added via ffmpeg YAML in configuration.yaml (config flow times out)
+  - [x] Run `deploy/07d-Add-CameraDashboard.ps1` to update dashboard (16 cameras)
+  - [ ] Investigate Dining Room Camera (.191) — showing unavailable after config, may be wrong IP
 - [x] **Alliance Heat Pump (Pool)** - Integrated via HACS `radical-squared/aquatemp` v3.0.37
   - Cloud account: tuksmaestro@gmail.com (shared device from main account)
   - Climate entity: `climate.289c6e4f7352` + 100+ sensor entities
@@ -133,12 +135,13 @@
 ## LLM Vision Analysis (Gemini Flash)
 
 - [x] **Setup script** - `deploy/08-Setup-VisionAnalysis.ps1` creates sensors, automations, scheduled task
-- [x] **Run script** - `deploy/08a-Run-VisionAnalysis.ps1` captures 8 cameras, calls Gemini, updates sensors/alerts
+- [x] **Run script** - `deploy/08a-Run-VisionAnalysis.ps1` captures 13 cameras, calls Gemini, updates sensors/alerts
 - [x] **Run setup** - Executed `08-Setup-VisionAnalysis.ps1` (sensors + automations + scheduled task created)
 - [x] **Test manually** - `08a-Run-VisionAnalysis.ps1` runs, sensors update in Developer Tools > States
 - [x] **Verify security alerts** - TTS alerts fire on kitchen speaker for human detection (8PM-6AM)
 - [x] **Verify gate status** - Main gate and visitor gate status correctly detected (palisade fence gap = open)
 - [x] **Dashboard cards** - `08b-Add-VisionDashboard.ps1` added Vision AI to Overview + Security dashboards
+- [x] **Camera health check** - `deploy/12-Camera-HealthCheck.ps1` runs every 30 min, reloads Tapo/EZVIZ config entries and restarts ffmpeg for unavailable cameras
 - [ ] **Verify light auto-off** - Dining/kitchen lights turn off after midnight if no human detected
 - [ ] **Verify chicken count** - Check `sensor.chicken_count` updates correctly
 - [ ] **Verify food detection** - Check meal sensors during breakfast/lunch/dinner windows
@@ -188,4 +191,4 @@
 
 ---
 
-*Last updated: 2026-03-12 (v1.8.0: EZVIZ farm camera integration — deploy scripts, sensors, automations, dashboard)*
+*Last updated: 2026-03-13 (v1.9.0: Camera IP update + 5 new cameras — Lawn Tapo, Pool/Garage/Lounge/Street RTSP)*

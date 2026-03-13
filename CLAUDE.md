@@ -16,7 +16,7 @@ Home Assistant installation for a house in Randpark, South Africa. Deployed on a
 - **Network**: 192.168.0.x subnet, external virtual switch bridged to physical NIC
 - **HA API**: Use WebSocket API (`ws://homeassistant.local:8123/api/websocket`) for Supervisor operations. The REST `/api/hassio/` endpoints return 401 with long-lived tokens - this is by design.
 
-## Current State (as of 2026-03-12)
+## Current State (as of 2026-03-13)
 
 ### Working Integrations
 | Integration | Method | Entities | Notes |
@@ -25,11 +25,11 @@ Home Assistant installation for a house in Randpark, South Africa. Deployed on a
 | Sunsynk Solar | HACS (MorneSaunders360/Solar-Sunsynk) | 38 sensors (2 inverters) | Cloud API |
 | Samsung TV | Built-in (samsungtv) | media_player + remote | IP: 192.168.0.27 |
 | Google Cast | Built-in (cast) | 10 media players | Auto-discovered |
-| Tapo Cameras | HACS (JurajNyiri/Tapo-Control) | 12 entities (6 cams x HD+SD) | Cloud: mhokloppers@gmail.com |
-| RTSP Gate Cameras | ffmpeg (YAML) | 2 cameras | .2:5102 (Main), .2:5103 (Visitor) |
+| Tapo Cameras | HACS (JurajNyiri/Tapo-Control) | 14 entities (7 cams x HD+SD) | Cloud: mhokloppers@gmail.com |
+| RTSP Cameras | Generic Camera (ffmpeg) | 6 cameras | .2:5101-5110 (gates, pool, garage, lounge, street) |
 | Alliance Heat Pump | HACS (radical-squared/aquatemp) | climate + 100+ sensors | Cloud: tuksmaestro@gmail.com |
 | Google Assistant SDK | Built-in | send_text_command | Limited: no news/podcast |
-| Gemini Vision Analysis | External API + Scheduled Task | 7 sensors | 8 cameras every 60s |
+| Gemini Vision Analysis | External API + Scheduled Task | 7 sensors | 13 cameras every 60s |
 | Weather Briefing | Open-Meteo API + Gemini + Scheduled Task | 1 sensor | Daily at 04:15, TTS in morning greeting |
 | EZVIZ Farm Cameras | Built-in (ezviz) + Scheduled Task | 10 sensors | 6 cameras every 5 min, cloud-only (4G) |
 
@@ -50,6 +50,7 @@ Home Assistant installation for a house in Randpark, South Africa. Deployed on a
 | `HA-VisionAnalysis` | `deploy/08a-Run-VisionAnalysis.ps1` | Every 60 seconds |
 | `HA-EzvizVision` | `deploy/10a-Run-EzvizVision.ps1` | Every 5 minutes |
 | `HA-RecreateSensors` | `deploy/11-Recreate-Sensors.ps1` | On server startup (2 min delay) |
+| `HA-CameraHealthCheck` | `deploy/12-Camera-HealthCheck.ps1` | Every 30 minutes |
 
 ## Project Structure
 
@@ -87,6 +88,8 @@ HomeAssistantProject/
 │   ├── 10a-Run-EzvizVision.ps1      # EZVIZ vision analysis runner (every 5 min)
 │   ├── 10b-Add-EzvizDashboard.ps1   # Farm Cameras tab on Security dashboard
 │   ├── 11-Recreate-Sensors.ps1      # Recreate temp sensors on HA restart (startup task)
+│   ├── 12-Camera-HealthCheck.ps1    # Camera health check + auto-reconnect (every 30 min)
+│   ├── 13-Update-CameraIPs.ps1     # One-off: delete stale Tapo entries + recreate with new IPs
 │   ├── Manage-VM.ps1               # VM management utility (needs admin)
 │   └── README.md                   # Deployment instructions
 ├── docs/

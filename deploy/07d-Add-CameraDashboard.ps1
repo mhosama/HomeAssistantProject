@@ -116,8 +116,8 @@ if (-not $states) {
     exit 1
 }
 
-$cameraEntities = @($states | Where-Object { $_.entity_id -like "camera.*" })
-Write-Info "Found $($cameraEntities.Count) camera entities"
+$cameraEntities = @($states | Where-Object { $_.entity_id -like "camera.*" -and $_.entity_id -notlike "camera.farm_camera_*" })
+Write-Info "Found $($cameraEntities.Count) camera entities (excluding farm cameras)"
 
 # Group cameras: SD streams for dashboard thumbnails, HD for full view
 # Tapo cameras create pairs: *_hd_stream and *_sd_stream

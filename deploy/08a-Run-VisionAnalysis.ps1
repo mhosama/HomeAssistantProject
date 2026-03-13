@@ -167,6 +167,12 @@ $alertConfig = @{
     "Kitchen_lights"        = @{ TTS = $false; Phone = $false }
     "MainGate_open"         = @{ TTS = $true;  Phone = $true  }
     "VisitorGate_open"      = @{ TTS = $true;  Phone = $true  }
+    "Lawn_human"            = @{ TTS = $true;  Phone = $true  }
+    "Pool_human"            = @{ TTS = $true;  Phone = $true  }
+    "Garage_human"          = @{ TTS = $true;  Phone = $true  }
+    "Lounge_human"          = @{ TTS = $true;  Phone = $true  }
+    "Lounge_lights"         = @{ TTS = $false; Phone = $false }
+    "Street_human"          = @{ TTS = $true;  Phone = $true  }
 }
 
 $ttsEngine      = "tts.google_translate_en_com"
@@ -222,6 +228,31 @@ $cameras = @(
         Name     = "VisitorGate"
         EntityId = "camera.visitor_gate_camera"
         Type     = "gate"
+    }
+    @{
+        Name     = "Lawn"
+        EntityId = "camera.lawn_camera_sd_stream"
+        Type     = "security"
+    }
+    @{
+        Name     = "Pool"
+        EntityId = "camera.pool_camera"
+        Type     = "security"
+    }
+    @{
+        Name     = "Garage"
+        EntityId = "camera.garage_camera"
+        Type     = "security"
+    }
+    @{
+        Name     = "Lounge"
+        EntityId = "camera.lounge_camera"
+        Type     = "indoor"
+    }
+    @{
+        Name     = "Street"
+        EntityId = "camera.street_camera"
+        Type     = "security"
     }
 )
 
@@ -330,6 +361,46 @@ Count all cars parked on the brick driveway/parking space INSIDE the property. D
 $nightNote
 Respond with ONLY this JSON:
 {"gate_status": "<open/closed>", "car_count": <integer>, "description": "<brief description>"}
+"@
+        }
+        "Lawn" {
+            return @"
+This is an outdoor security camera overlooking a lawn/garden area at a residential property. The scene normally shows grass, garden beds, fencing, and possibly outdoor furniture or play equipment. Look carefully for any HUMAN figures - a person standing, walking, crouching, or moving anywhere in the frame. Do NOT confuse garden furniture, plant shapes, statues, or shadows for humans. Only report human_detected=true if you can clearly identify a human body shape.
+$nightNote
+Respond with ONLY this JSON:
+{"human_detected": <true/false>, "confidence": "<high/medium/low>", "description": "<brief description>"}
+"@
+        }
+        "Pool" {
+            return @"
+This is an outdoor security camera overlooking a swimming pool area at a residential property. The scene normally shows a pool, pool deck, outdoor furniture, and surrounding fencing or walls. Look carefully for any HUMAN figures - a person swimming, sitting by the pool, standing, walking, or moving anywhere in the frame. Check for any signs of someone in the water (especially important for safety). Do NOT confuse pool equipment, reflections on water, or furniture for humans.
+$nightNote
+Respond with ONLY this JSON:
+{"human_detected": <true/false>, "person_in_pool": <true/false>, "confidence": "<high/medium/low>", "description": "<brief description>"}
+"@
+        }
+        "Garage" {
+            return @"
+This is a security camera inside or overlooking a garage area. The scene normally shows vehicles, tools, storage items, and garage doors. Look carefully for any HUMAN figures - a person standing, walking, crouching, or moving anywhere in the frame. Do NOT confuse storage items, tools, or vehicle shapes for humans. Only report human_detected=true if you can clearly identify a human body shape.
+$nightNote
+Respond with ONLY this JSON:
+{"human_detected": <true/false>, "confidence": "<high/medium/low>", "description": "<brief description>"}
+"@
+        }
+        "Lounge" {
+            return @"
+This is an indoor camera in a lounge/living room area. The scene typically shows a sofa, TV, coffee table, and other living room furniture. Look for any HUMAN figures - someone sitting on the sofa, standing, or walking through. Check if indoor lights are on (room appears brightly lit with warm/artificial lighting) or off (room appears dark, only TV glow). A TV that is on does NOT count as lights being on - only overhead or room lights count.
+$nightNote
+Respond with ONLY this JSON:
+{"human_detected": <true/false>, "lights_on": <true/false>, "confidence": "<high/medium/low>", "description": "<brief description>"}
+"@
+        }
+        "Street" {
+            return @"
+This is an outdoor security camera facing the street outside a residential property. The scene normally shows the road, pavement/sidewalk, parked cars, and possibly neighbouring houses or fences. Look carefully for any HUMAN figures - a person walking, standing, or loitering on the street or pavement near the property. Also note any vehicles that appear to be stopped or parked suspiciously close to the property. Do NOT confuse street furniture (bins, poles, post boxes) or parked cars for humans.
+$nightNote
+Respond with ONLY this JSON:
+{"human_detected": <true/false>, "vehicle_detected": <true/false>, "confidence": "<high/medium/low>", "description": "<brief description>"}
 "@
         }
     }
@@ -749,6 +820,66 @@ foreach ($r in $results) {
                 icon                = "mdi:car"
                 unit_of_measurement = "cars"
                 last_updated        = $now.ToString("o")
+            }
+        }
+
+        "Lawn" {
+            if ($isNightSecurity -and $data.human_detected -eq $true -and $data.confidence -ne "low") {
+                $alertKey = "Lawn_human"
+                if (-not (Test-AlertThrottled -Key $alertKey)) {
+                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected on the lawn."
+                    Set-AlertTime -Key $alertKey
+                }
+            }
+        }
+
+        "Pool" {
+            if ($isNightSecurity -and $data.human_detected -eq $true -and $data.confidence -ne "low") {
+                $alertKey = "Pool_human"
+                if (-not (Test-AlertThrottled -Key $alertKey)) {
+                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected at the pool area."
+                    Set-AlertTime -Key $alertKey
+                }
+            }
+        }
+
+        "Garage" {
+            if ($isNightSecurity -and $data.human_detected -eq $true -and $data.confidence -ne "low") {
+                $alertKey = "Garage_human"
+                if (-not (Test-AlertThrottled -Key $alertKey)) {
+                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected in the garage."
+                    Set-AlertTime -Key $alertKey
+                }
+            }
+        }
+
+        "Lounge" {
+            # Indoor security alert (12AM-6AM only)
+            if ($isAfterMidnight -and $data.human_detected -eq $true -and $data.confidence -ne "low") {
+                $alertKey = "Lounge_human"
+                if (-not (Test-AlertThrottled -Key $alertKey)) {
+                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected in the lounge."
+                    Set-AlertTime -Key $alertKey
+                }
+            }
+
+            # Auto lights off after midnight if no human
+            if ($isAfterMidnight -and $data.lights_on -eq $true -and $data.human_detected -eq $false) {
+                $alertKey = "Lounge_lights"
+                if (-not (Test-AlertThrottled -Key $alertKey)) {
+                    Write-Log "Lounge lights on after midnight with no human detected (no auto-off entities configured yet)"
+                    Set-AlertTime -Key $alertKey
+                }
+            }
+        }
+
+        "Street" {
+            if ($isNightSecurity -and $data.human_detected -eq $true -and $data.confidence -ne "low") {
+                $alertKey = "Street_human"
+                if (-not (Test-AlertThrottled -Key $alertKey)) {
+                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected on the street outside the property."
+                    Set-AlertTime -Key $alertKey
+                }
             }
         }
     }
