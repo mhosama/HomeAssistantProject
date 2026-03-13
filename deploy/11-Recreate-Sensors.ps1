@@ -117,6 +117,27 @@ $sensors = @(
 
     # Weather briefing sensor
     @{ entity_id = "sensor.weather_briefing"; state = "unknown"; attributes = @{ friendly_name = "Weather Briefing"; icon = "mdi:weather-partly-cloudy" } }
+
+    # Street camera object detection sensors (from 15-Setup-ObjectDetection.ps1)
+    @{ entity_id = "sensor.street_cam_detections_today"; state = "0";       attributes = @{ friendly_name = "Street Cam Detections Today"; icon = "mdi:cctv";           unit_of_measurement = "detections"; by_type = @{}; hourly = @{} } }
+    @{ entity_id = "sensor.street_cam_people_today";     state = "0";       attributes = @{ friendly_name = "Street Cam People Today";     icon = "mdi:walk";           unit_of_measurement = "people" } }
+    @{ entity_id = "sensor.street_cam_vehicles_today";   state = "0";       attributes = @{ friendly_name = "Street Cam Vehicles Today";   icon = "mdi:car";            unit_of_measurement = "vehicles" } }
+    @{ entity_id = "sensor.street_cam_last_detection";   state = "unknown"; attributes = @{ friendly_name = "Street Cam Last Detection";   icon = "mdi:clock-outline"  } }
+    @{ entity_id = "sensor.street_cam_last_object";      state = "none";    attributes = @{ friendly_name = "Street Cam Last Object";      icon = "mdi:shape"          } }
+    @{ entity_id = "sensor.street_cam_status";           state = "offline"; attributes = @{ friendly_name = "Street Cam Detection Status"; icon = "mdi:alert-circle"   } }
+    @{ entity_id = "sensor.street_cam_last_plate";           state = "none"; attributes = @{ friendly_name = "Street Cam Last Plate";           icon = "mdi:car-info" } }
+    @{ entity_id = "sensor.street_cam_unknown_plates_today"; state = "0";    attributes = @{ friendly_name = "Street Cam Unknown Plates Today"; icon = "mdi:car-emergency"; unit_of_measurement = "plates"; plates = @() } }
+    @{ entity_id = "sensor.street_cam_person_1";  state = "empty"; attributes = @{ friendly_name = "Street Cam Person 1";  icon = "mdi:walk" } }
+    @{ entity_id = "sensor.street_cam_person_2";  state = "empty"; attributes = @{ friendly_name = "Street Cam Person 2";  icon = "mdi:walk" } }
+    @{ entity_id = "sensor.street_cam_person_3";  state = "empty"; attributes = @{ friendly_name = "Street Cam Person 3";  icon = "mdi:walk" } }
+    @{ entity_id = "sensor.street_cam_person_4";  state = "empty"; attributes = @{ friendly_name = "Street Cam Person 4";  icon = "mdi:walk" } }
+    @{ entity_id = "sensor.street_cam_person_5";  state = "empty"; attributes = @{ friendly_name = "Street Cam Person 5";  icon = "mdi:walk" } }
+    @{ entity_id = "sensor.street_cam_vehicle_1"; state = "empty"; attributes = @{ friendly_name = "Street Cam Vehicle 1"; icon = "mdi:car" } }
+    @{ entity_id = "sensor.street_cam_vehicle_2"; state = "empty"; attributes = @{ friendly_name = "Street Cam Vehicle 2"; icon = "mdi:car" } }
+    @{ entity_id = "sensor.street_cam_vehicle_3"; state = "empty"; attributes = @{ friendly_name = "Street Cam Vehicle 3"; icon = "mdi:car" } }
+    @{ entity_id = "sensor.street_cam_vehicle_4"; state = "empty"; attributes = @{ friendly_name = "Street Cam Vehicle 4"; icon = "mdi:car" } }
+    @{ entity_id = "sensor.street_cam_vehicle_5"; state = "empty"; attributes = @{ friendly_name = "Street Cam Vehicle 5"; icon = "mdi:car" } }
+    @{ entity_id = "sensor.street_cam_loitering"; state = "clear"; attributes = @{ friendly_name = "Street Cam Loitering"; icon = "mdi:account-clock" } }
 )
 
 # ============================================================

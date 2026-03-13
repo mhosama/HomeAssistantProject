@@ -173,6 +173,39 @@ Set-Item WSMan:\localhost\Client\TrustedHosts -Value "DESKTOP-HG724B5" -Force
 
 **Solution**: Don't use `New-PSSession` for persistent sessions — use `Invoke-Command -ComputerName` directly. Bundle all remote work into a single `Invoke-Command` call to avoid connection limit issues.
 
+### WinRM "Access Denied" after successful calls (session exhaustion)
+
+**Symptom**: First `Invoke-Command` succeeds, but subsequent calls within seconds fail with "Access is denied". `Test-WSMan` still works.
+
+**Cause**: WinRM has aggressive connection/session limits. Rapid successive `Invoke-Command` calls exhaust the session pool. This is NOT a credential or permission issue — it's resource exhaustion.
+
+**Solution**:
+- Bundle ALL remote work into a **single** `Invoke-Command` call
+- For large scriptblocks: write to a `.ps1` file, read with `Get-Content -Raw`, pass as argument:
+  ```powershell
+  $code = Get-Content ".\remote_script.ps1" -Raw
+  Invoke-Command -ComputerName SERVER -Credential $cred -ScriptBlock { param($s) Invoke-Expression $s } -ArgumentList $code
+  ```
+- On the server, `Restart-Service WinRM` clears stuck sessions
+- Wait 15+ seconds between calls if you must make multiple
+
+### pip.exe fails via PS Remoting
+
+**Symptom**: `& C:\Python311\Scripts\pip.exe install ...` returns "The file cannot be accessed by the system" when run via `Invoke-Command`.
+
+**Solution**: Use `python -m pip` instead:
+```powershell
+& C:\Python311\python.exe -m pip install -r requirements.txt
+```
+
+### Windows Store Python stub vs real Python
+
+**Symptom**: `Get-Command python` returns `C:\Users\mhokl\AppData\Local\Microsoft\WindowsApps\python.exe` which fails with "The file cannot be accessed by the system" when run as SYSTEM or via PS Remoting.
+
+**Cause**: The WindowsApps python.exe is a Microsoft Store stub that only works for the installing user, not for SYSTEM or other accounts.
+
+**Solution**: Use the full Python installation at `C:\Python311\python.exe`. When creating scheduled tasks, always specify the full path.
+
 ### Bash heredoc breaks PowerShell `$variable\$path` strings
 
 **Symptom**: When running PowerShell from bash, string interpolation like `"$srcDir\$f"` produces `"C:\path\"` (variable lost).
@@ -297,5 +330,8 @@ Track issues encountered during this specific deployment:
 | 11 | 2026-03-12 | EZVIZ image entity returns stale images | image entity only updates on PIR motion events, not on demand | EZVIZ farm cameras |
 | 12 | 2026-03-12 | New-PSSession fails but Invoke-Command works | Use Invoke-Command directly, bundle work into single call | Server deployment |
 | 13 | 2026-03-12 | Vision/farm sensors vanish after HA restart | Sensors via POST /api/states are temporary — scripts recreate on next run | Vision + EZVIZ |
+| 14 | 2026-03-13 | WinRM session exhaustion — rapid Invoke-Command calls fail | Bundle into single call; use Get-Content + Invoke-Expression pattern for large scripts | Server deployment |
+| 15 | 2026-03-13 | pip.exe inaccessible via PS Remoting | Use `python -m pip` instead of calling pip.exe directly | Object detection deploy |
+| 16 | 2026-03-13 | Windows Store python.exe fails as SYSTEM | Use real Python at `C:\Python311\python.exe`, not WindowsApps stub | Object detection deploy |
 
 > Update this log as issues are discovered and resolved.

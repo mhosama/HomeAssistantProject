@@ -1,0 +1,10 @@
+{
+  "plates": {},
+  "unknown_night_alert": {
+    "enabled": true,
+    "night_start": "22:00",
+    "night_end": "06:00",
+    "speaker_alert": true,
+    "mobile_alert": true
+  }
+}

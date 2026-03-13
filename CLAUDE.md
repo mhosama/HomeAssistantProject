@@ -51,6 +51,7 @@ Home Assistant installation for a house in Randpark, South Africa. Deployed on a
 | `HA-EzvizVision` | `deploy/10a-Run-EzvizVision.ps1` | Every 5 minutes |
 | `HA-RecreateSensors` | `deploy/11-Recreate-Sensors.ps1` | On server startup (2 min delay) |
 | `HA-CameraHealthCheck` | `deploy/12-Camera-HealthCheck.ps1` | Every 30 minutes |
+| `HA-CameraObjectDetection` | `CameraObjectDetection/supervisor.py` | On server startup |
 
 ## Project Structure
 
@@ -91,8 +92,18 @@ HomeAssistantProject/
 │   ├── 12-Camera-HealthCheck.ps1    # Camera health check + auto-reconnect (every 30 min)
 │   ├── 13-Update-CameraIPs.ps1     # One-off: delete stale Tapo entries + recreate with new IPs
 │   ├── 14-Setup-InfoDashboard.ps1  # Info dashboard with vision analysis stats
+│   ├── 15-Setup-ObjectDetection.ps1 # Street camera object detection deployment
 │   ├── Manage-VM.ps1               # VM management utility (needs admin)
 │   └── README.md                   # Deployment instructions
+├── CameraObjectDetection/   # YOLOv5 street camera detection pipeline
+│   ├── config.py            # Central configuration (paths, tuning, HA settings)
+│   ├── supervisor.py        # Process monitor (launches + auto-restarts scripts)
+│   ├── ha_metrics.py        # HA sensor publisher (detection counts → REST API)
+│   ├── SampleImages.py      # RTSP frame capture with auto-reconnect
+│   ├── DetectObjects3.py    # YOLOv5 object detection on sampled frames
+│   ├── ProcessCropFiles.py  # Sort detections into organized dirs + OCR plates
+│   ├── run.bat              # Simple launcher for supervisor
+│   └── requirements.txt     # Python dependencies
 ├── docs/
 │   ├── EQUIPMENT.md       # Device inventory with IPs and protocols
 │   ├── SETUP-GUIDE.md     # Hyper-V + HAOS deployment steps
@@ -123,7 +134,8 @@ HomeAssistantProject/
 ## Claude Session Instructions
 
 1. **Read `TODO.md` first** - check what's outstanding and what's new
-2. **Update `TODO.md`** when completing tasks or discovering new ones
+2. **Before any server deployment**, read `memory/remote-deploy-patterns.md` for proven patterns (quick deploy, Samba access, health checks, common gotchas)
+3. **Update `TODO.md`** when completing tasks or discovering new ones
 3. Always check `docs/DECISIONS.md` before proposing architectural changes
 4. Update `docs/TROUBLESHOOTING.md` when solving non-trivial issues
 5. When adding integrations, update `docs/INTEGRATIONS.md`, `docs/EQUIPMENT.md`, and `TODO.md`

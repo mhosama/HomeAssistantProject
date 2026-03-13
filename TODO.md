@@ -163,6 +163,31 @@
 - [ ] **Add phone notifications** - Update alert actions once Companion App `notify.mobile_app_*` entity is available
 - [ ] **Implement light auto-off via Sonoff switches** - Replace removed AI-based light detection with actual switch state monitoring for dining/kitchen/lounge lights
 
+## Street Camera Object Detection (YOLOv5)
+
+- [x] **Clean up CameraObjectDetection folder** — removed ~400MB of unused files, models, experiments
+- [x] **Refactor active scripts** — SampleImages, DetectObjects3, ProcessCropFiles use central config.py, logging, error handling
+- [x] **Supervisor (supervisor.py)** — auto-monitors and restarts the 3 detection scripts
+- [x] **HA metrics (ha_metrics.py)** — publishes detection counts to HA sensors every 60s
+- [x] **Deploy script (15-Setup-ObjectDetection.ps1)** — copies to server, creates scheduled task, HA sensors, dashboard
+- [x] **Plate registry (plate_registry.json + ProcessCropFiles.py)** — known plate lookup, per-plate alert toggles, unknown night alerts, 5-min cooldown
+- [x] **Image gallery (ProcessCropFiles.py + ha_metrics.py)** — last 5 people + 5 vehicles as sliding window in HA www via Samba
+- [x] **Loitering detection (DetectObjects3.py + deep-sort-realtime)** — Deep SORT tracker, 60s threshold, TTS + mobile alerts, cropped image to HA
+- [x] **Alerts module (alerts.py)** — shared TTS + mobile notification module, auto-discovers `notify.mobile_app_*`
+- [x] **Dashboard updated** — plate info, image galleries (person/vehicle), conditional loitering alert card
+- [x] **19 HA sensors** — 6 original + 2 plate + 10 image gallery + 1 loitering
+- [x] **Recreate sensors (11-Recreate-Sensors.ps1)** — all 19 street cam sensors added to boot recreate list
+- [ ] **Deploy to server** — run `deploy/15-Setup-ObjectDetection.ps1` to deploy pipeline
+- [ ] **Verify Python dependencies on server** — `pip install -r requirements.txt` (inc. deep-sort-realtime)
+- [ ] **Start scheduled task** — `schtasks /run /tn HA-CameraObjectDetection` or reboot server
+- [ ] **Verify sensors** — check `sensor.street_cam_*` entities in Developer Tools > States (19 total)
+- [ ] **Verify dashboard** — view Street Stats at `http://homeassistant.local:8123/street-stats`
+- [ ] **Verify image gallery** — check `/local/street_person_*.jpg` and `/local/street_vehicle_*.jpg` URLs load
+- [ ] **Test loitering** — stand in front of camera >60s, verify TTS + mobile alert fires
+- [ ] **Kill test** — kill one Python process, verify supervisor restarts it within 30s
+- [ ] **Add known plates** — edit `plate_registry.json` on server to add family/known vehicles
+- [ ] **Improve license plate OCR** — current Tesseract-based OCR is basic; consider cloud OCR or dedicated ANPR model
+
 ## Network & Security
 
 - [ ] Create a DHCP reservation map for all smart devices
@@ -203,4 +228,4 @@
 
 ---
 
-*Last updated: 2026-03-13 (v2.0.0: Per-camera scheduling + motion burst mode + light analysis removed + daily counts with history)*
+*Last updated: 2026-03-13 (v2.3.0: Plate registry, image gallery, Deep SORT loitering detection)*

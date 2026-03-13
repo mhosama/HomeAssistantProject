@@ -1,6 +1,6 @@
 # Home Assistant - Randpark House
 
-**Version 2.1.0** | [Changelog](#changelog)
+**Version 2.2.0** | [Changelog](#changelog)
 
 Comprehensive home automation system managing solar/energy, lighting, sensors, security cameras, media, pool, irrigation, and more.
 
@@ -83,6 +83,15 @@ Comprehensive home automation system managing solar/energy, lighting, sensors, s
 - **Phase 7**: Polish — entity renaming, DHCP reservations, phone notifications, local mode *(in progress)*
 
 ## Changelog
+
+### v2.2.0 — 2026-03-13
+- **Added**: CameraObjectDetection pipeline cleanup — removed ~400MB of unused files/models/experiments
+- **Added**: Supervisor process monitor (`supervisor.py`) — auto-restarts crashed detection scripts
+- **Added**: Central config (`config.py`) — all paths, tuning params, HA settings in one place
+- **Added**: HA sensor integration (`ha_metrics.py`) — street camera detection counts pushed to HA every 60s
+- **Added**: Street Stats dashboard — detection summary, hourly breakdown, by-type counts
+- **Added**: `deploy/15-Setup-ObjectDetection.ps1` — server deployment + scheduled task + HA setup
+- **Changed**: Active scripts (SampleImages, DetectObjects3, ProcessCropFiles) refactored with logging, error handling, auto-reconnect
 
 ### v2.1.0 — 2026-03-13
 - **Added**: Pool Status + Garage Doors sections on Security > Vision AI dashboard
