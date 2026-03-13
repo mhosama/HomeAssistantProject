@@ -1,6 +1,6 @@
 # Home Assistant - Randpark House
 
-**Version 1.7.0** | [Changelog](#changelog)
+**Version 2.1.0** | [Changelog](#changelog)
 
 Comprehensive home automation system managing solar/energy, lighting, sensors, security cameras, media, pool, irrigation, and more.
 
@@ -83,6 +83,30 @@ Comprehensive home automation system managing solar/energy, lighting, sensors, s
 - **Phase 7**: Polish — entity renaming, DHCP reservations, phone notifications, local mode *(in progress)*
 
 ## Changelog
+
+### v2.1.0 — 2026-03-13
+- **Added**: Pool Status + Garage Doors sections on Security > Vision AI dashboard
+- **Added**: Pool cover + garage door cards on Overview dashboard
+- **Added**: Info dashboard with vision analysis stats (per-camera daily counts, history)
+- **Added**: `2min` schedule tier; pool camera uses 2-min intervals during afternoon swim hours (14–19h)
+- **Changed**: Dashboard update script now replaces existing cards in-place (idempotent)
+
+### v2.0.0 — 2026-03-13
+- **Added**: Per-camera vision analysis scheduling with 7 tiers (10s–1hr) + time-of-day overrides
+- **Added**: Motion burst mode for Tapo cameras (10s → 30s → 60s taper)
+- **Added**: Pool camera sensors (adult_count, child_count, pool_cover_status) + unsupervised children alert
+- **Added**: Garage door sensors (left/right open/closed) + door-left-open alerts
+- **Added**: Daily analysis count tracking per camera with 30-day history
+- **Added**: Camera health check script (auto-reconnect every 30 min)
+- **Added**: EZVIZ farm camera scripts (cloud capture + Gemini analysis)
+- **Removed**: AI-based light detection (unreliable, replaced by Sonoff switch states)
+
+### v1.9.0 — 2026-03-13
+- **Updated**: Tapo camera IPs (7 cameras reconfigured after DHCP changes)
+- **Added**: 5 new RTSP cameras (Lawn, Pool, Garage, Lounge, Street)
+
+### v1.8.0 — 2026-03-12
+- **Added**: Sensor recreation on HA restart (`deploy/11-Recreate-Sensors.ps1` + startup task)
 
 ### v1.7.0 — 2026-03-12
 - **Fixed**: Morning Greeting TTS cutoff — replaced hardcoded 20s delay with `wait_for_trigger` (speaker playing→idle, 60s timeout)

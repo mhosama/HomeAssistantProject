@@ -17,5 +17,8 @@ deploy/test-check.ps1
 # Snapshot images
 *.jpg
 
+# Dev/experimental scripts and ML models
+dev/
+
 # Claude Code local settings
 .claude/

@@ -29,7 +29,7 @@ Home Assistant installation for a house in Randpark, South Africa. Deployed on a
 | RTSP Cameras | Generic Camera (ffmpeg) | 6 cameras | .2:5101-5110 (gates, pool, garage, lounge, street) |
 | Alliance Heat Pump | HACS (radical-squared/aquatemp) | climate + 100+ sensors | Cloud: tuksmaestro@gmail.com |
 | Google Assistant SDK | Built-in | send_text_command | Limited: no news/podcast |
-| Gemini Vision Analysis | External API + Scheduled Task | 7 sensors | 13 cameras every 60s |
+| Gemini Vision Analysis | External API + Scheduled Task | 8 sensors | 12 cameras, per-camera schedules + motion burst |
 | Weather Briefing | Open-Meteo API + Gemini + Scheduled Task | 1 sensor | Daily at 04:15, TTS in morning greeting |
 | EZVIZ Farm Cameras | Built-in (ezviz) + Scheduled Task | 10 sensors | 6 cameras every 5 min, cloud-only (4G) |
 
@@ -47,7 +47,7 @@ Home Assistant installation for a house in Randpark, South Africa. Deployed on a
 |---|---|---|
 | `HA-RefreshNews` | `deploy/06a-Refresh-News.ps1` | Daily at 04:30 |
 | `HA-RefreshWeather` | `deploy/09a-Refresh-Weather.ps1` | Daily at 04:15 |
-| `HA-VisionAnalysis` | `deploy/08a-Run-VisionAnalysis.ps1` | Every 60 seconds |
+| `HA-VisionAnalysis` | `deploy/08a-Run-VisionAnalysis.ps1` | Every 10 seconds (per-camera schedules) |
 | `HA-EzvizVision` | `deploy/10a-Run-EzvizVision.ps1` | Every 5 minutes |
 | `HA-RecreateSensors` | `deploy/11-Recreate-Sensors.ps1` | On server startup (2 min delay) |
 | `HA-CameraHealthCheck` | `deploy/12-Camera-HealthCheck.ps1` | Every 30 minutes |
@@ -90,6 +90,7 @@ HomeAssistantProject/
 │   ├── 11-Recreate-Sensors.ps1      # Recreate temp sensors on HA restart (startup task)
 │   ├── 12-Camera-HealthCheck.ps1    # Camera health check + auto-reconnect (every 30 min)
 │   ├── 13-Update-CameraIPs.ps1     # One-off: delete stale Tapo entries + recreate with new IPs
+│   ├── 14-Setup-InfoDashboard.ps1  # Info dashboard with vision analysis stats
 │   ├── Manage-VM.ps1               # VM management utility (needs admin)
 │   └── README.md                   # Deployment instructions
 ├── docs/

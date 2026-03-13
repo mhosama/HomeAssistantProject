@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-    One-time setup for LLM vision analysis of all 8 cameras.
+    One-time setup for LLM vision analysis of cameras with per-camera scheduling.
 
 .DESCRIPTION
-    Creates HA sensors (chicken count, gate status, food descriptions, car counts),
+    Creates HA sensors (chicken count, gate status, food descriptions, car counts, analysis stats),
     HA automations (gate open too long, chickens not inside), and registers a
-    Windows Scheduled Task to run 08a-Run-VisionAnalysis.ps1 every 60 seconds.
+    Windows Scheduled Task to run 08a-Run-VisionAnalysis.ps1 every 10 seconds.
 
     Run this ONCE after cameras are configured.
 
@@ -56,6 +56,12 @@ $sensors = @(
     @{ entity_id = "sensor.main_gate_car_count";     state = "0";       attributes = @{ friendly_name = "Main Gate Car Count";    icon = "mdi:car";            unit_of_measurement = "cars" } }
     @{ entity_id = "sensor.visitor_gate_status";     state = "unknown"; attributes = @{ friendly_name = "Visitor Gate Status";    icon = "mdi:gate"            } }
     @{ entity_id = "sensor.visitor_gate_car_count";  state = "0";       attributes = @{ friendly_name = "Visitor Gate Car Count"; icon = "mdi:car";            unit_of_measurement = "cars" } }
+    @{ entity_id = "sensor.vision_analysis_stats";   state = "0";       attributes = @{ friendly_name = "Vision Analysis Stats";  icon = "mdi:chart-bar"       } }
+    @{ entity_id = "sensor.pool_adult_count";       state = "0";       attributes = @{ friendly_name = "Pool Adult Count";      icon = "mdi:account";        unit_of_measurement = "people" } }
+    @{ entity_id = "sensor.pool_child_count";       state = "0";       attributes = @{ friendly_name = "Pool Child Count";      icon = "mdi:account-child";  unit_of_measurement = "people" } }
+    @{ entity_id = "sensor.pool_cover_status";      state = "unknown"; attributes = @{ friendly_name = "Pool Cover Status";     icon = "mdi:pool"            } }
+    @{ entity_id = "sensor.left_garage_door";       state = "unknown"; attributes = @{ friendly_name = "Left Garage Door";      icon = "mdi:garage"          } }
+    @{ entity_id = "sensor.right_garage_door";      state = "unknown"; attributes = @{ friendly_name = "Right Garage Door";     icon = "mdi:garage"          } }
 )
 
 foreach ($sensor in $sensors) {
@@ -193,31 +199,30 @@ try {
 }
 
 # ============================================================
-# STEP 3: Register Windows Scheduled Task
+# STEP 3: Register Windows Scheduled Task (every 10 seconds)
 # ============================================================
 
-Write-Step "3/3 - Registering Scheduled Task"
+Write-Step "3/3 - Registering Scheduled Task (every 1 minute, internal 10s loop)"
 
 $taskName = "HA-VisionAnalysis"
 $scriptPath = Join-Path $scriptDir "08a-Run-VisionAnalysis.ps1"
 
 Write-Info "Script path: $scriptPath"
 
-# Check if task already exists
+# Delete old task first (may have been created with schtasks or Register-ScheduledTask)
+Write-Info "Removing existing task '$taskName' if present..."
 try {
-    $existingTask = schtasks /query /tn $taskName 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        Write-Info "Task '$taskName' already exists, deleting..."
-        schtasks /delete /tn $taskName /f 2>&1 | Out-Null
-    }
-} catch {
-    # Task doesn't exist, that's fine
-}
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+} catch {}
+try {
+    schtasks /delete /tn $taskName /f 2>&1 | Out-Null
+} catch {}
 
-Write-Info "Creating scheduled task '$taskName' (every 1 minute)..."
+Write-Info "Creating scheduled task '$taskName' (every 1 minute, internally polls every 10s)..."
+
 $result = schtasks /create /tn $taskName /tr "powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`"" /sc minute /mo 1 /ru SYSTEM /f
 if ($LASTEXITCODE -eq 0) {
-    Write-Success "Scheduled task '$taskName' created"
+    Write-Success "Scheduled task '$taskName' created (every 1 minute, internal 10s polling loop)"
 } else {
     Write-Fail "Failed to create scheduled task (run as admin for SYSTEM account, or remove /ru SYSTEM)"
     Write-Info "Manual command: schtasks /create /tn `"$taskName`" /tr `"powershell -ExecutionPolicy Bypass -File $scriptPath`" /sc minute /mo 1"
@@ -249,6 +254,12 @@ Write-Host "    - sensor.main_gate_status        (Main Gate Status)" -Foreground
 Write-Host "    - sensor.main_gate_car_count     (Main Gate Car Count)" -ForegroundColor White
 Write-Host "    - sensor.visitor_gate_status      (Visitor Gate Status)" -ForegroundColor White
 Write-Host "    - sensor.visitor_gate_car_count   (Visitor Gate Car Count)" -ForegroundColor White
+Write-Host "    - sensor.vision_analysis_stats    (Vision Analysis Stats - daily counts)" -ForegroundColor White
+Write-Host "    - sensor.pool_adult_count         (Pool Adult Count)" -ForegroundColor White
+Write-Host "    - sensor.pool_child_count         (Pool Child Count)" -ForegroundColor White
+Write-Host "    - sensor.pool_cover_status        (Pool Cover Status)" -ForegroundColor White
+Write-Host "    - sensor.left_garage_door         (Left Garage Door)" -ForegroundColor White
+Write-Host "    - sensor.right_garage_door        (Right Garage Door)" -ForegroundColor White
 Write-Host ""
 Write-Host "  Automations created:" -ForegroundColor Green
 Write-Host "    1. Main Gate Open Too Long    - sensor open > 10 min -> TTS" -ForegroundColor White
@@ -256,10 +267,26 @@ Write-Host "    2. Visitor Gate Open Too Long  - sensor open > 10 min -> TTS" -F
 Write-Host "    3. Chickens Not Inside         - 8PM + count < 1 -> TTS" -ForegroundColor White
 Write-Host "    4. Chickens Not Outside        - 8AM + count > 0 -> TTS" -ForegroundColor White
 Write-Host ""
-Write-Host "  Scheduled task: $taskName (every 1 minute)" -ForegroundColor Green
+Write-Host "  Scheduled task: $taskName (every 1 min, internal 10s loop)" -ForegroundColor Green
+Write-Host ""
+Write-Host "  Camera schedules:" -ForegroundColor Green
+Write-Host "    - Chickens:     1hr (60s at roost times, motion-only during day)" -ForegroundColor White
+Write-Host "    - Backyard:     motion-only (24/7)" -ForegroundColor White
+Write-Host "    - BackDoor:     motion-only (24/7)" -ForegroundColor White
+Write-Host "    - VeggieGarden: motion-only (24/7)" -ForegroundColor White
+Write-Host "    - DiningRoom:   motion-only (24/7)" -ForegroundColor White
+Write-Host "    - Kitchen:      30min (10min during meals)" -ForegroundColor White
+Write-Host "    - Lawn:         motion-only day, 5min night (+ motion)" -ForegroundColor White
+Write-Host "    - MainGate:     5min day, 30min night" -ForegroundColor White
+Write-Host "    - VisitorGate:  5min day, 30min night" -ForegroundColor White
+Write-Host "    - Pool:         5min (scheduled only)" -ForegroundColor White
+Write-Host "    - Garage:       15min day, 5min night" -ForegroundColor White
+Write-Host "    - Lounge:       15min (scheduled only)" -ForegroundColor White
+Write-Host "    - Street:       EXCLUDED from analysis" -ForegroundColor White
 Write-Host ""
 Write-Host "  Next steps:" -ForegroundColor Yellow
 Write-Host "    1. Run 08a-Run-VisionAnalysis.ps1 manually to test" -ForegroundColor Yellow
 Write-Host "    2. Check Developer Tools > States for sensor updates" -ForegroundColor Yellow
 Write-Host "    3. Check logs at deploy/logs/vision_analysis.log" -ForegroundColor Yellow
+Write-Host "    4. Verify Tapo motion sensor entity IDs in HA" -ForegroundColor Yellow
 Write-Host ""

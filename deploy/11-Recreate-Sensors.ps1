@@ -91,6 +91,12 @@ $sensors = @(
     @{ entity_id = "sensor.main_gate_car_count";     state = "0";       attributes = @{ friendly_name = "Main Gate Car Count";    icon = "mdi:car";            unit_of_measurement = "cars" } }
     @{ entity_id = "sensor.visitor_gate_status";     state = "unknown"; attributes = @{ friendly_name = "Visitor Gate Status";    icon = "mdi:gate"            } }
     @{ entity_id = "sensor.visitor_gate_car_count";  state = "0";       attributes = @{ friendly_name = "Visitor Gate Car Count"; icon = "mdi:car";            unit_of_measurement = "cars" } }
+    @{ entity_id = "sensor.vision_analysis_stats";   state = "0";       attributes = @{ friendly_name = "Vision Analysis Stats";  icon = "mdi:chart-bar"       } }
+    @{ entity_id = "sensor.pool_adult_count";       state = "0";       attributes = @{ friendly_name = "Pool Adult Count";      icon = "mdi:account";        unit_of_measurement = "people" } }
+    @{ entity_id = "sensor.pool_child_count";       state = "0";       attributes = @{ friendly_name = "Pool Child Count";      icon = "mdi:account-child";  unit_of_measurement = "people" } }
+    @{ entity_id = "sensor.pool_cover_status";      state = "unknown"; attributes = @{ friendly_name = "Pool Cover Status";     icon = "mdi:pool"            } }
+    @{ entity_id = "sensor.left_garage_door";       state = "unknown"; attributes = @{ friendly_name = "Left Garage Door";      icon = "mdi:garage"          } }
+    @{ entity_id = "sensor.right_garage_door";      state = "unknown"; attributes = @{ friendly_name = "Right Garage Door";     icon = "mdi:garage"          } }
 
     # Farm Vision Analysis sensors (from 10-Setup-Ezviz.ps1)
     @{ entity_id = "sensor.farm_cam_1_status"; state = "unknown"; attributes = @{ friendly_name = "Farm Camera 1"; icon = "mdi:cctv"; source = "ezviz" } }

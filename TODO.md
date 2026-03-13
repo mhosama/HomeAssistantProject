@@ -79,6 +79,8 @@
   - [x] Mini Media Player (04-Setup-Dashboards.ps1)
 - [x] Template sensors: combined inverter totals, lights-on count, doors-open count
 - [x] **Battery Time To Twenty** - TTT sensor + Overview dashboard updated (deploy/05a-Add-TimeToTwenty.ps1)
+- [x] **Vision AI dashboards updated** - Pool Status + Garage Doors sections added to Security > Vision AI tab + Overview (deploy/08b-Add-VisionDashboard.ps1)
+- [ ] **Info Dashboard** - Run `deploy/14-Setup-InfoDashboard.ps1` to create Info dashboard with vision analysis stats
 - [ ] **Post-deploy**: Verify entity IDs match actual devices (door sensors, motion sensors)
 - [ ] **Post-deploy**: Rename Sonoff entities for cleaner display names
 - [ ] **Post-deploy**: Verify Sunsynk Power Flow Card entity mappings
@@ -142,14 +144,24 @@
 - [x] **Verify gate status** - Main gate and visitor gate status correctly detected (palisade fence gap = open)
 - [x] **Dashboard cards** - `08b-Add-VisionDashboard.ps1` added Vision AI to Overview + Security dashboards
 - [x] **Camera health check** - `deploy/12-Camera-HealthCheck.ps1` runs every 30 min, reloads Tapo/EZVIZ config entries and restarts ffmpeg for unavailable cameras
-- [ ] **Verify light auto-off** - Dining/kitchen lights turn off after midnight if no human detected
+- [x] ~~**Verify light auto-off**~~ - Removed: light analysis via AI removed in v2.0 scheduling rewrite (will use Sonoff switch states instead)
+- [ ] **Verify Tapo motion sensor entity IDs** - Check HA Developer Tools > States for `binary_sensor.*_motion` entities from Tapo cameras. Update entity IDs in `08a-Run-VisionAnalysis.ps1` if they differ from assumed names.
 - [ ] **Verify chicken count** - Check `sensor.chicken_count` updates correctly
 - [ ] **Verify food detection** - Check meal sensors during breakfast/lunch/dinner windows
   - [x] Food items now accumulate with timestamps (e.g. "toast and eggs (07:30), porridge (07:45)")
   - [x] Fuzzy dedup prevents duplicate detections; longer descriptions replace shorter ones
   - [x] Items reset on new day; state stored in `.vision_state.json` under `food_items`
-- [ ] **Monitor logs** - Check `deploy/logs/vision_analysis.log` for errors
+- [x] **Pool camera enhanced** - Adult/child counting, pool cover status, unsupervised children alert (5min throttle, daytime only)
+  - New sensors: `sensor.pool_adult_count`, `sensor.pool_child_count`, `sensor.pool_cover_status`
+  - [x] Added to Security > Vision AI tab + Overview dashboard
+- [x] **Garage camera enhanced** - Left/right garage door open/closed detection, 5-min open alerts (10min throttle)
+  - New sensors: `sensor.left_garage_door`, `sensor.right_garage_door`
+  - Door timing tracked in `.vision_state.json` under `garage_doors`
+  - [x] Added to Security > Vision AI tab + Overview dashboard
+- [ ] **Monitor logs** - Check `deploy/logs/vision_analysis.log` for scheduling decisions and camera counts
+- [ ] **Check daily analysis counts** - Monitor `sensor.vision_analysis_stats` for per-camera daily counts (attributes: `*_today`, `*_history`). 30-day history stored in state file.
 - [ ] **Add phone notifications** - Update alert actions once Companion App `notify.mobile_app_*` entity is available
+- [ ] **Implement light auto-off via Sonoff switches** - Replace removed AI-based light detection with actual switch state monitoring for dining/kitchen/lounge lights
 
 ## Network & Security
 
@@ -191,4 +203,4 @@
 
 ---
 
-*Last updated: 2026-03-13 (v1.9.0: Camera IP update + 5 new cameras — Lawn Tapo, Pool/Garage/Lounge/Street RTSP)*
+*Last updated: 2026-03-13 (v2.0.0: Per-camera scheduling + motion burst mode + light analysis removed + daily counts with history)*

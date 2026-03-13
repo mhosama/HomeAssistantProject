@@ -204,6 +204,79 @@ $visionView = @{
                 }
             )
         }
+        # Pool Status section
+        @{
+            type  = "vertical-stack"
+            cards = @(
+                @{
+                    type     = "custom:mushroom-template-card"
+                    primary  = "Pool Status"
+                    icon     = "mdi:pool"
+                    icon_color = "teal"
+                    secondary = "AI-detected pool activity from camera"
+                }
+                @{
+                    type    = "grid"
+                    columns = 2
+                    square  = $false
+                    cards   = @(
+                        @{
+                            type   = "custom:mushroom-entity-card"
+                            entity = "sensor.pool_adult_count"
+                            name   = "Adults"
+                            icon   = "mdi:account"
+                        }
+                        @{
+                            type   = "custom:mushroom-entity-card"
+                            entity = "sensor.pool_child_count"
+                            name   = "Children"
+                            icon   = "mdi:account-child"
+                        }
+                        @{
+                            type       = "custom:mushroom-entity-card"
+                            entity     = "sensor.pool_cover_status"
+                            name       = "Pool Cover"
+                            icon       = "mdi:shield-sun"
+                            icon_color = "{{ 'red' if is_state('sensor.pool_cover_status', 'open') else ('green' if is_state('sensor.pool_cover_status', 'closed') else 'orange') }}"
+                        }
+                    )
+                }
+            )
+        }
+        # Garage Doors section
+        @{
+            type  = "vertical-stack"
+            cards = @(
+                @{
+                    type     = "custom:mushroom-template-card"
+                    primary  = "Garage Doors"
+                    icon     = "mdi:garage"
+                    icon_color = "grey"
+                    secondary = "AI-detected garage door status"
+                }
+                @{
+                    type    = "grid"
+                    columns = 2
+                    square  = $false
+                    cards   = @(
+                        @{
+                            type       = "custom:mushroom-entity-card"
+                            entity     = "sensor.left_garage_door"
+                            name       = "Left Door"
+                            icon       = "{{ 'mdi:garage-open' if is_state('sensor.left_garage_door', 'open') else 'mdi:garage' }}"
+                            icon_color = "{{ 'red' if is_state('sensor.left_garage_door', 'open') else 'green' }}"
+                        }
+                        @{
+                            type       = "custom:mushroom-entity-card"
+                            entity     = "sensor.right_garage_door"
+                            name       = "Right Door"
+                            icon       = "{{ 'mdi:garage-open' if is_state('sensor.right_garage_door', 'open') else 'mdi:garage' }}"
+                            icon_color = "{{ 'red' if is_state('sensor.right_garage_door', 'open') else 'green' }}"
+                        }
+                    )
+                }
+            )
+        }
     )
 }
 
@@ -248,89 +321,105 @@ $existingCards = @($overviewView.cards)
 Write-Info "Overview has $($existingCards.Count) card(s)"
 
 # Check if we already added vision cards (look for chicken_count entity)
-$alreadyHasVision = $false
-foreach ($card in $existingCards) {
-    $json = $card | ConvertTo-Json -Depth 10 -Compress
+$visionCardIndex = -1
+for ($i = 0; $i -lt $existingCards.Count; $i++) {
+    $json = $existingCards[$i] | ConvertTo-Json -Depth 10 -Compress
     if ($json -match "chicken_count") {
-        $alreadyHasVision = $true
+        $visionCardIndex = $i
         break
     }
 }
 
-if ($alreadyHasVision) {
-    Write-Info "Vision AI cards already exist on Overview - skipping"
-} else {
-    # Find the Security section (second vertical-stack) and add gate vision sensors after it
-    # Add a new Vision AI section after Security
-    $visionOverviewCard = @{
-        type  = "vertical-stack"
-        cards = @(
-            @{
-                type       = "custom:mushroom-template-card"
-                primary    = "Vision AI"
-                icon       = "mdi:eye"
-                icon_color = "purple"
-                secondary  = "{{ states('sensor.main_gate_status') | title }} / {{ states('sensor.visitor_gate_status') | title }} gates | {{ states('sensor.chicken_count') }} chickens"
-            }
-            @{
-                type    = "grid"
-                columns = 2
-                square  = $false
-                cards   = @(
-                    @{
-                        type      = "custom:mushroom-entity-card"
-                        entity    = "sensor.main_gate_status"
-                        name      = "Main Gate"
-                        icon      = "mdi:gate"
-                        icon_color = "{{ 'red' if is_state('sensor.main_gate_status', 'open') else 'green' }}"
-                    }
-                    @{
-                        type      = "custom:mushroom-entity-card"
-                        entity    = "sensor.visitor_gate_status"
-                        name      = "Visitor Gate"
-                        icon      = "mdi:gate"
-                        icon_color = "{{ 'red' if is_state('sensor.visitor_gate_status', 'open') else 'green' }}"
-                    }
-                    @{
-                        type   = "custom:mushroom-entity-card"
-                        entity = "sensor.chicken_count"
-                        name   = "Chickens"
-                        icon   = "mdi:chicken"
-                    }
-                    @{
-                        type   = "custom:mushroom-entity-card"
-                        entity = "sensor.main_gate_car_count"
-                        name   = "Cars (Main)"
-                        icon   = "mdi:car"
-                    }
-                )
-            }
-        )
-    }
+# Always build the latest Vision AI card
+$visionOverviewCard = @{
+    type  = "vertical-stack"
+    cards = @(
+        @{
+            type       = "custom:mushroom-template-card"
+            primary    = "Vision AI"
+            icon       = "mdi:eye"
+            icon_color = "purple"
+            secondary  = "{{ states('sensor.main_gate_status') | title }} / {{ states('sensor.visitor_gate_status') | title }} gates | {{ states('sensor.chicken_count') }} chickens"
+        }
+        @{
+            type    = "grid"
+            columns = 2
+            square  = $false
+            cards   = @(
+                @{
+                    type      = "custom:mushroom-entity-card"
+                    entity    = "sensor.main_gate_status"
+                    name      = "Main Gate"
+                    icon      = "mdi:gate"
+                    icon_color = "{{ 'red' if is_state('sensor.main_gate_status', 'open') else 'green' }}"
+                }
+                @{
+                    type      = "custom:mushroom-entity-card"
+                    entity    = "sensor.visitor_gate_status"
+                    name      = "Visitor Gate"
+                    icon      = "mdi:gate"
+                    icon_color = "{{ 'red' if is_state('sensor.visitor_gate_status', 'open') else 'green' }}"
+                }
+                @{
+                    type   = "custom:mushroom-entity-card"
+                    entity = "sensor.chicken_count"
+                    name   = "Chickens"
+                    icon   = "mdi:chicken"
+                }
+                @{
+                    type   = "custom:mushroom-entity-card"
+                    entity = "sensor.main_gate_car_count"
+                    name   = "Cars (Main)"
+                    icon   = "mdi:car"
+                }
+                @{
+                    type       = "custom:mushroom-entity-card"
+                    entity     = "sensor.pool_cover_status"
+                    name       = "Pool Cover"
+                    icon       = "mdi:shield-sun"
+                    icon_color = "{{ 'red' if is_state('sensor.pool_cover_status', 'open') else ('green' if is_state('sensor.pool_cover_status', 'closed') else 'orange') }}"
+                }
+                @{
+                    type       = "custom:mushroom-entity-card"
+                    entity     = "sensor.left_garage_door"
+                    name       = "Garage (L)"
+                    icon       = "{{ 'mdi:garage-open' if is_state('sensor.left_garage_door', 'open') else 'mdi:garage' }}"
+                    icon_color = "{{ 'red' if is_state('sensor.left_garage_door', 'open') else 'green' }}"
+                }
+            )
+        }
+    )
+}
 
+if ($visionCardIndex -ge 0) {
+    # Replace existing Vision AI card in place
+    Write-Info "Replacing existing Vision AI card at index $visionCardIndex"
+    $existingCards[$visionCardIndex] = $visionOverviewCard
+    $newCards = $existingCards
+} else {
     # Insert after the Security section (index 1, which is the 2nd card)
+    Write-Info "Inserting new Vision AI card"
     $newCards = @()
     for ($i = 0; $i -lt $existingCards.Count; $i++) {
         $newCards += $existingCards[$i]
         if ($i -eq 1) {
-            # Insert after Security section
             $newCards += $visionOverviewCard
         }
     }
+}
 
-    $overviewView.cards = $newCards
-    $overviewViews[0] = $overviewView
-    $overviewDash.views = $overviewViews
+$overviewView.cards = $newCards
+$overviewViews[0] = $overviewView
+$overviewDash.views = $overviewViews
 
-    $saveResp2 = Invoke-WSCommand -Type "lovelace/config/save" -Extra @{
-        config = $overviewDash
-    }
+$saveResp2 = Invoke-WSCommand -Type "lovelace/config/save" -Extra @{
+    config = $overviewDash
+}
 
-    if ($saveResp2.success) {
-        Write-Success "Overview dashboard updated with Vision AI section!"
-    } else {
-        Write-Fail "Save failed: $($saveResp2.error.message)"
-    }
+if ($saveResp2.success) {
+    Write-Success "Overview dashboard updated with Vision AI section!"
+} else {
+    Write-Fail "Save failed: $($saveResp2.error.message)"
 }
 
 # ============================================================
@@ -343,10 +432,10 @@ Write-Step "Dashboard Update Complete"
 
 Write-Host ""
 Write-Host "  Security dashboard:" -ForegroundColor Green
-Write-Host "    - New 'Vision AI' tab with gate status, chicken count, food tracker" -ForegroundColor White
+Write-Host "    - New 'Vision AI' tab with gate status, chicken count, food tracker, pool status, garage doors" -ForegroundColor White
 Write-Host "    - View at: http://$($Config.HA_IP):8123/security-dashboard/vision-ai" -ForegroundColor White
 Write-Host ""
 Write-Host "  Overview dashboard:" -ForegroundColor Green
-Write-Host "    - New 'Vision AI' section with gate status, chickens, car count" -ForegroundColor White
+Write-Host "    - New 'Vision AI' section with gate status, chickens, car count, pool cover, garage door" -ForegroundColor White
 Write-Host "    - View at: http://$($Config.HA_IP):8123/lovelace/overview" -ForegroundColor White
 Write-Host ""
