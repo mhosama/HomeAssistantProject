@@ -126,7 +126,7 @@ $sensors = @(
     @{ entity_id = "sensor.street_cam_last_object";      state = "none";    attributes = @{ friendly_name = "Street Cam Last Object";      icon = "mdi:shape"          } }
     @{ entity_id = "sensor.street_cam_status";           state = "offline"; attributes = @{ friendly_name = "Street Cam Detection Status"; icon = "mdi:alert-circle"   } }
     @{ entity_id = "sensor.street_cam_last_plate";           state = "none"; attributes = @{ friendly_name = "Street Cam Last Plate";           icon = "mdi:car-info" } }
-    @{ entity_id = "sensor.street_cam_unknown_plates_today"; state = "0";    attributes = @{ friendly_name = "Street Cam Unknown Plates Today"; icon = "mdi:car-emergency"; unit_of_measurement = "plates"; plates = @() } }
+    @{ entity_id = "sensor.street_cam_known_plates_today"; state = "0"; attributes = @{ friendly_name = "Street Cam Known Plates Today"; icon = "mdi:car-multiple"; unit_of_measurement = "sightings"; plates = @() } }
     @{ entity_id = "sensor.street_cam_person_1";  state = "empty"; attributes = @{ friendly_name = "Street Cam Person 1";  icon = "mdi:walk" } }
     @{ entity_id = "sensor.street_cam_person_2";  state = "empty"; attributes = @{ friendly_name = "Street Cam Person 2";  icon = "mdi:walk" } }
     @{ entity_id = "sensor.street_cam_person_3";  state = "empty"; attributes = @{ friendly_name = "Street Cam Person 3";  icon = "mdi:walk" } }
@@ -138,6 +138,11 @@ $sensors = @(
     @{ entity_id = "sensor.street_cam_vehicle_4"; state = "empty"; attributes = @{ friendly_name = "Street Cam Vehicle 4"; icon = "mdi:car" } }
     @{ entity_id = "sensor.street_cam_vehicle_5"; state = "empty"; attributes = @{ friendly_name = "Street Cam Vehicle 5"; icon = "mdi:car" } }
     @{ entity_id = "sensor.street_cam_loitering"; state = "clear"; attributes = @{ friendly_name = "Street Cam Loitering"; icon = "mdi:account-clock" } }
+
+    # Loitering verification counters
+    @{ entity_id = "sensor.street_cam_unconfirmed_loitering_today"; state = "0"; attributes = @{ friendly_name = "Street Cam Unconfirmed Loitering Today"; icon = "mdi:account-question"; unit_of_measurement = "detections" } }
+    @{ entity_id = "sensor.street_cam_confirmed_loitering_today";   state = "0"; attributes = @{ friendly_name = "Street Cam Confirmed Loitering Today";   icon = "mdi:account-check";    unit_of_measurement = "detections" } }
+    @{ entity_id = "sensor.street_cam_false_loitering_today";       state = "0"; attributes = @{ friendly_name = "Street Cam False Loitering Today";       icon = "mdi:account-cancel";   unit_of_measurement = "detections" } }
 )
 
 # ============================================================

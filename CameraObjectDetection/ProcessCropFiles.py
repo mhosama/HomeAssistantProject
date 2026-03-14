@@ -79,7 +79,7 @@ def _load_plate_state():
                 return json.load(f)
         except Exception:
             pass
-    return {"cooldowns": {}, "unknown_today": [], "unknown_date": ""}
+    return {"cooldowns": {}, "known_today": {}, "known_date": ""}
 
 
 def _save_plate_state(state):
@@ -126,10 +126,10 @@ def check_plate_registry(plate_text):
     now = time.time()
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # Reset daily unknowns if new day
-    if state.get("unknown_date") != today:
-        state["unknown_today"] = []
-        state["unknown_date"] = today
+    # Reset daily known counts if new day
+    if state.get("known_date") != today:
+        state["known_today"] = {}
+        state["known_date"] = today
 
     # Normalize plate: uppercase, strip non-alphanumeric
     normalized = re.sub(r"[^A-Z0-9]", "", plate_text.upper())
@@ -141,12 +141,13 @@ def check_plate_registry(plate_text):
     on_cooldown = (now - last_alert) < config.PLATE_ALERT_COOLDOWN
 
     plates_dict = registry.get("plates", {})
-    # Normalize registry keys for matching
+    # Substring match: check if any registry plate appears within the detected text
+    # (OCR often adds extra characters). Case-insensitive.
     match_key = None
     match_info = None
     for reg_plate, info in plates_dict.items():
         reg_normalized = re.sub(r"[^A-Z0-9]", "", reg_plate.upper())
-        if reg_normalized == normalized:
+        if reg_normalized in normalized or normalized in reg_normalized:
             match_key = reg_plate
             match_info = info
             break
@@ -164,6 +165,28 @@ def check_plate_registry(plate_text):
     })
 
     if is_known:
+        # Track known plate daily sightings
+        reg_upper = re.sub(r"[^A-Z0-9]", "", match_key.upper())
+        if reg_upper not in state["known_today"]:
+            state["known_today"][reg_upper] = {"count": 0, "last_seen": "", "owner": owner}
+        state["known_today"][reg_upper]["count"] += 1
+        state["known_today"][reg_upper]["last_seen"] = datetime.now().isoformat()
+        state["known_today"][reg_upper]["owner"] = owner
+
+        # Push known plates today sensor
+        total = sum(e["count"] for e in state["known_today"].values())
+        plates_list = sorted(
+            [{"plate": p, "owner": d["owner"], "count": d["count"], "last_seen": d["last_seen"]}
+             for p, d in state["known_today"].items()],
+            key=lambda x: x["last_seen"], reverse=True,
+        )
+        _push_sensor("sensor.street_cam_known_plates_today", total, {
+            "friendly_name": "Street Cam Known Plates Today",
+            "icon": "mdi:car-multiple",
+            "unit_of_measurement": "sightings",
+            "plates": plates_list,
+        })
+
         # Known plate — alert per toggle settings
         if not on_cooldown:
             msg = f"{owner}'s vehicle detected. Plate: {normalized}"
@@ -174,21 +197,7 @@ def check_plate_registry(plate_text):
                 state["cooldowns"][normalized] = now
                 logger.info("Known plate alert: %s (%s)", normalized, owner)
     else:
-        # Unknown plate
-        if normalized not in [p.get("plate") for p in state["unknown_today"]]:
-            state["unknown_today"].append({"plate": normalized, "time": datetime.now().isoformat()})
-            # Keep last 10 only
-            state["unknown_today"] = state["unknown_today"][-10:]
-
-        # Push unknown plates count
-        _push_sensor("sensor.street_cam_unknown_plates_today", len(state["unknown_today"]), {
-            "friendly_name": "Street Cam Unknown Plates Today",
-            "icon": "mdi:car-emergency",
-            "unit_of_measurement": "plates",
-            "plates": state["unknown_today"],
-        })
-
-        # Night alert for unknowns
+        # Unknown plate — night alert only (no daily tracking)
         night_cfg = registry.get("unknown_night_alert", {})
         if night_cfg.get("enabled") and not on_cooldown:
             if _is_night_time(night_cfg.get("night_start", "22:00"), night_cfg.get("night_end", "06:00")):
@@ -250,7 +259,14 @@ def copy_to_ha_sliding_window(src_path, object_type):
     dest = os.path.join(samba_dir, filename)
 
     try:
-        shutil.copy2(src_path, dest)
+        # YOLOv5 crop files have R↔B channels swapped (PIL saves RGB input with
+        # channel reversal). Read with cv2, swap channels back, then write correct JPEG.
+        img = cv2.imread(src_path)
+        if img is not None:
+            img_fixed = img[:, :, ::-1]  # swap R↔B to correct the double-reversal
+            cv2.imwrite(dest, img_fixed)
+        else:
+            shutil.copy2(src_path, dest)  # fallback: copy as-is if imread fails
         logger.info("Image slot %s -> %s", filename, dest)
         slots[category] = idx  # Next call wraps via modulo
         _save_image_slots(slots)

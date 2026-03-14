@@ -1,5 +1,9 @@
 {
-  "plates": {},
+  "plates": {
+    "KH78WWGP": { "owner": "Mauritz Ford Everest", "speaker_alert": false, "mobile_alert": false },
+    "MR80BWGP": { "owner": "Chandre Kia Sorento", "speaker_alert": false, "mobile_alert": false },
+    "JHS001MP": { "owner": "Chandre Parents Nissan Navara", "speaker_alert": false, "mobile_alert": false }
+  },
   "unknown_night_alert": {
     "enabled": true,
     "night_start": "22:00",

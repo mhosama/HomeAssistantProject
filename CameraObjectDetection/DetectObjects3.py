@@ -20,6 +20,7 @@ from deep_sort_realtime.deepsort_tracker import DeepSort
 
 import config
 import alerts
+import gemini_verify
 
 # ============================================================
 # Logging setup
@@ -120,11 +121,11 @@ def _save_loitering_images(first_crop, last_crop, track_id):
     try:
         if first_crop is not None:
             dest = os.path.join(samba_dir, config.LOITERING_IMAGE_FIRST)
-            cv2.imwrite(dest, first_crop)
+            cv2.imwrite(dest, first_crop[:, :, ::-1])
             first_url = f"/local/{config.LOITERING_IMAGE_FIRST}"
         if last_crop is not None:
             dest = os.path.join(samba_dir, config.LOITERING_IMAGE_LAST)
-            cv2.imwrite(dest, last_crop)
+            cv2.imwrite(dest, last_crop[:, :, ::-1])
             last_url = f"/local/{config.LOITERING_IMAGE_LAST}"
         logger.info("Loitering images saved (track %s)", track_id)
     except Exception:
@@ -137,13 +138,44 @@ def _save_loitering_images(first_crop, last_crop, track_id):
 _last_loiter_info = {"object_type": None, "detected_at": None, "duration_seconds": 0,
                      "image_first": None, "image_last": None}
 
+# Daily loitering verification counters
+_loiter_counters = {"unconfirmed": 0, "confirmed": 0, "false": 0, "date": ""}
+
+
+def _push_loiter_counter_sensors():
+    """Push all 3 loitering counter sensors to HA."""
+    for name in ("unconfirmed", "confirmed", "false"):
+        icon = {"unconfirmed": "mdi:account-question",
+                "confirmed": "mdi:account-check",
+                "false": "mdi:account-cancel"}[name]
+        _push_sensor(f"sensor.street_cam_{name}_loitering_today", str(_loiter_counters[name]), {
+            "friendly_name": f"Street Cam {name.title()} Loitering Today",
+            "icon": icon,
+            "unit_of_measurement": "detections",
+        })
+
+
+def _increment_loiter_counter(name):
+    """Increment a loitering counter, resetting all if the date changed."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    if _loiter_counters["date"] != today:
+        _loiter_counters["unconfirmed"] = 0
+        _loiter_counters["confirmed"] = 0
+        _loiter_counters["false"] = 0
+        _loiter_counters["date"] = today
+    _loiter_counters[name] += 1
+    _push_loiter_counter_sensors()
+
 
 def check_loitering(tracker, frame, detections_xyxy, class_names, crop_images,
-                     track_first_seen, loiter_cooldowns, track_first_crops):
+                     track_first_seen, loiter_cooldowns, track_first_crops,
+                     track_last_seen, track_hit_count):
     """
     Feed detections to Deep SORT and check for loitering.
     crop_images: list of numpy arrays from results.crop() matching detections_xyxy order.
     track_first_crops: dict[track_id] -> numpy crop of the object when first seen.
+    track_last_seen: dict[track_id] -> timestamp of last detection (gap detection).
+    track_hit_count: dict[track_id] -> number of frames this track was detected in.
     Returns True if a new loitering alert was fired.
     """
     global _last_loiter_info
@@ -180,32 +212,114 @@ def check_loitering(tracker, frame, detections_xyxy, class_names, crop_images,
         track_id = track.track_id
         active_track_ids.add(track_id)
 
+        # Gap detection: if track reappears after a long gap, it's likely a different object
+        if track_id in track_last_seen:
+            gap = now - track_last_seen[track_id]
+            if gap > config.LOITERING_MAX_GAP_SECONDS:
+                logger.info("Track %s gap %.1fs > %ds — resetting first_seen",
+                            track_id, gap, config.LOITERING_MAX_GAP_SECONDS)
+                track_first_seen.pop(track_id, None)
+                track_hit_count[track_id] = 0
+                track_first_crops.pop(track_id, None)
+
+        # Always update last_seen
+        track_last_seen[track_id] = now
+
         # Record first seen time + save first crop from YOLOv5
         if track_id not in track_first_seen:
             track_first_seen[track_id] = now
+            track_hit_count[track_id] = 1
             first_crop = _find_best_crop(track, detection_crops)
             if first_crop is not None:
                 track_first_crops[track_id] = first_crop
             continue
 
+        # Increment hit count
+        track_hit_count[track_id] = track_hit_count.get(track_id, 0) + 1
+        hits = track_hit_count[track_id]
+
         duration = now - track_first_seen[track_id]
 
-        if duration >= config.LOITERING_THRESHOLD_SECONDS:
+        if duration >= config.LOITERING_THRESHOLD_SECONDS and hits >= config.LOITERING_MIN_HITS:
             # Check cooldown
             last_alert = loiter_cooldowns.get(track_id, 0)
             if (now - last_alert) >= config.LOITERING_ALERT_COOLDOWN:
                 det_class = track.det_class if hasattr(track, "det_class") else "object"
+
+                # Always count as unconfirmed first
+                _increment_loiter_counter("unconfirmed")
 
                 # Use YOLOv5 crops: first from when track started, last from current frame
                 first_crop = track_first_crops.get(track_id)
                 last_crop = _find_best_crop(track, detection_crops)
                 first_url, last_url = _save_loitering_images(first_crop, last_crop, track_id)
 
+                # Gemini verification: only fire alert if Gemini explicitly confirms
+                verified = None
+                gemini_desc = ""
+                gemini_reason = ""
                 alert_time = datetime.now().isoformat()
+
+                if first_crop is None or last_crop is None:
+                    # Missing crop — cannot verify, suppress alert
+                    logger.warning("LOITERING SUPPRESSED (missing crop): track %s, %s, %ds — "
+                                   "first_crop=%s, last_crop=%s",
+                                   track_id, det_class, int(duration),
+                                   "present" if first_crop is not None else "missing",
+                                   "present" if last_crop is not None else "missing")
+                    loiter_cooldowns[track_id] = now
+                    continue
+
+                result = gemini_verify.verify_loitering(first_crop, last_crop)
+                if result is None:
+                    # Gemini unavailable — suppress alert
+                    logger.warning("LOITERING SUPPRESSED (Gemini unavailable): track %s, %s, %ds",
+                                   track_id, det_class, int(duration))
+                    loiter_cooldowns[track_id] = now
+                    continue
+
+                verified = result.get("same_object", False)
+                gemini_desc = result.get("description", "")
+                gemini_reason = result.get("reason", "")
+
+                if not verified:
+                    _increment_loiter_counter("false")
+                    # Rejected — update sensor but skip alert
+                    _last_loiter_info = {
+                        "object_type": det_class,
+                        "detected_at": alert_time,
+                        "duration_seconds": int(duration),
+                        "detection_hits": hits,
+                        "image_first": first_url,
+                        "image_last": last_url,
+                    }
+                    _push_sensor("sensor.street_cam_loitering", "rejected", {
+                        "friendly_name": "Street Cam Loitering",
+                        "icon": "mdi:account-clock",
+                        "object_type": det_class,
+                        "track_id": str(track_id),
+                        "duration_seconds": int(duration),
+                        "detection_hits": hits,
+                        "detected_at": alert_time,
+                        "entity_picture": last_url,
+                        "image_first": first_url,
+                        "image_last": last_url,
+                        "verified": False,
+                        "gemini_reason": gemini_reason,
+                    })
+                    loiter_cooldowns[track_id] = now
+                    logger.info("LOITERING REJECTED by Gemini: track %s, %s — %s",
+                                track_id, det_class, gemini_reason)
+                    continue
+
+                # Gemini confirmed — fire alert
+                _increment_loiter_counter("confirmed")
+                tts_desc = gemini_desc if gemini_desc else det_class
                 _last_loiter_info = {
                     "object_type": det_class,
                     "detected_at": alert_time,
                     "duration_seconds": int(duration),
+                    "detection_hits": hits,
                     "image_first": first_url,
                     "image_last": last_url,
                 }
@@ -216,17 +330,21 @@ def check_loitering(tracker, frame, detections_xyxy, class_names, crop_images,
                     "object_type": det_class,
                     "track_id": str(track_id),
                     "duration_seconds": int(duration),
+                    "detection_hits": hits,
                     "detected_at": alert_time,
                     "entity_picture": last_url,
                     "image_first": first_url,
                     "image_last": last_url,
+                    "verified": True,
+                    "gemini_description": gemini_desc or None,
                 })
 
-                msg = f"Loitering detected: {det_class} visible for {int(duration)} seconds"
+                msg = f"Loitering detected: {tts_desc} visible for {int(duration)} seconds"
                 alerts.send_alert(msg, title="Loitering Alert")
                 loiter_cooldowns[track_id] = now
                 alert_fired = True
-                logger.warning("LOITERING ALERT: track %s, %s, %ds", track_id, det_class, int(duration))
+                logger.warning("LOITERING ALERT: track %s, %s, %ds, %d hits (Gemini confirmed)",
+                               track_id, det_class, int(duration), hits)
 
     # Clear state for gone tracks (stale > 120s)
     stale_ids = [tid for tid in track_first_seen if tid not in active_track_ids]
@@ -235,11 +353,14 @@ def check_loitering(tracker, frame, detections_xyxy, class_names, crop_images,
             del track_first_seen[tid]
             loiter_cooldowns.pop(tid, None)
             track_first_crops.pop(tid, None)
+            track_last_seen.pop(tid, None)
+            track_hit_count.pop(tid, None)
 
     # Set sensor to clear if no active loitering
     if not alert_fired:
         has_active_loitering = any(
             (now - track_first_seen.get(t, now)) >= config.LOITERING_THRESHOLD_SECONDS
+            and track_hit_count.get(t, 0) >= config.LOITERING_MIN_HITS
             for t in active_track_ids if t in track_first_seen
         )
         if not has_active_loitering:
@@ -249,6 +370,7 @@ def check_loitering(tracker, frame, detections_xyxy, class_names, crop_images,
                 "object_type": _last_loiter_info.get("object_type"),
                 "track_id": None,
                 "duration_seconds": _last_loiter_info.get("duration_seconds", 0),
+                "detection_hits": _last_loiter_info.get("detection_hits", 0),
                 "detected_at": _last_loiter_info.get("detected_at"),
                 "entity_picture": _last_loiter_info.get("image_last"),
                 "image_first": _last_loiter_info.get("image_first"),
@@ -271,6 +393,8 @@ def run():
     track_first_seen = {}  # track_id -> first_seen_timestamp
     loiter_cooldowns = {}  # track_id -> last_alert_timestamp
     track_first_crops = {}  # track_id -> numpy crop of first sighting
+    track_last_seen = {}   # track_id -> last detection timestamp (gap detection)
+    track_hit_count = {}   # track_id -> number of frames detected in
 
     logger.info("Watching: %s", config.SAMPLE_DIR)
 
@@ -323,6 +447,7 @@ def run():
                             check_loitering(
                                 tracker, frame, detections, cls_names, crop_images,
                                 track_first_seen, loiter_cooldowns, track_first_crops,
+                                track_last_seen, track_hit_count,
                             )
                         else:
                             # No detections — still update tracker with empty list

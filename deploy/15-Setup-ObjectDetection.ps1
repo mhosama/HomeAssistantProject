@@ -60,6 +60,7 @@ $filesToCopy = @(
     "DetectObjects3.py",
     "ProcessCropFiles.py",
     "alerts.py",
+    "gemini_verify.py",
     "plate_registry.json",
     "run.bat",
     "requirements.txt"
@@ -78,8 +79,8 @@ foreach ($f in $filesToCopy) {
     }
 }
 
-Invoke-Command -ComputerName $serverName -Credential $serverCred -ArgumentList $remoteDestDir, $fileContents, $Config.HA_TOKEN -ScriptBlock {
-    param($destDir, $files, $haToken)
+Invoke-Command -ComputerName $serverName -Credential $serverCred -ArgumentList $remoteDestDir, $fileContents, $Config.HA_TOKEN, $Config.GeminiApiKey -ScriptBlock {
+    param($destDir, $files, $haToken, $geminiKey)
 
     # Create destination directory
     if (-not (Test-Path $destDir)) {
@@ -98,10 +99,11 @@ Invoke-Command -ComputerName $serverName -Credential $serverCred -ArgumentList $
         [System.IO.File]::WriteAllText($filePath, $files[$name])
     }
 
-    # Patch config.py with HA_TOKEN on the server
+    # Patch config.py with HA_TOKEN and GEMINI_API_KEY on the server
     $configPath = Join-Path $destDir "config.py"
     $content = [System.IO.File]::ReadAllText($configPath)
     $content = $content -replace 'HA_TOKEN\s*=\s*""', "HA_TOKEN = `"$haToken`""
+    $content = $content -replace 'GEMINI_API_KEY\s*=\s*""', "GEMINI_API_KEY = `"$geminiKey`""
     [System.IO.File]::WriteAllText($configPath, $content)
 
     # Create wrapper bat that establishes Samba connection before running supervisor
@@ -192,7 +194,7 @@ $sensors = @(
 
     # Plate registry sensors
     @{ entity_id = "sensor.street_cam_last_plate";           state = "none"; attributes = @{ friendly_name = "Street Cam Last Plate";           icon = "mdi:car-info";      owner = "Unknown"; known = $false } }
-    @{ entity_id = "sensor.street_cam_unknown_plates_today"; state = "0";    attributes = @{ friendly_name = "Street Cam Unknown Plates Today"; icon = "mdi:car-emergency"; unit_of_measurement = "plates"; plates = @() } }
+    @{ entity_id = "sensor.street_cam_known_plates_today"; state = "0"; attributes = @{ friendly_name = "Street Cam Known Plates Today"; icon = "mdi:car-multiple"; unit_of_measurement = "sightings"; plates = @() } }
 
     # Image gallery sensors (person 1-5)
     @{ entity_id = "sensor.street_cam_person_1";  state = "empty"; attributes = @{ friendly_name = "Street Cam Person 1";  icon = "mdi:walk" } }
@@ -210,6 +212,11 @@ $sensors = @(
 
     # Loitering detection sensor
     @{ entity_id = "sensor.street_cam_loitering"; state = "clear"; attributes = @{ friendly_name = "Street Cam Loitering"; icon = "mdi:account-clock"; object_type = $null; track_id = $null; duration_seconds = 0 } }
+
+    # Loitering verification counters
+    @{ entity_id = "sensor.street_cam_unconfirmed_loitering_today"; state = "0"; attributes = @{ friendly_name = "Street Cam Unconfirmed Loitering Today"; icon = "mdi:account-question"; unit_of_measurement = "detections" } }
+    @{ entity_id = "sensor.street_cam_confirmed_loitering_today";   state = "0"; attributes = @{ friendly_name = "Street Cam Confirmed Loitering Today";   icon = "mdi:account-check";    unit_of_measurement = "detections" } }
+    @{ entity_id = "sensor.street_cam_false_loitering_today";       state = "0"; attributes = @{ friendly_name = "Street Cam False Loitering Today";       icon = "mdi:account-cancel";   unit_of_measurement = "detections" } }
 )
 
 foreach ($sensor in $sensors) {
@@ -377,13 +384,22 @@ Track {{ state_attr('sensor.street_cam_loitering', 'track_id') }} | {{ state_att
                                 @{
                                     type    = "markdown"
                                     title   = "First Seen"
-                                    content = "{% if state_attr('sensor.street_cam_loitering', 'image_first') %}<img src='{{ state_attr(""sensor.street_cam_loitering"", ""image_first"") }}?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:8px;' />{% else %}No image yet{% endif %}"
+                                    content = "{% if state_attr('sensor.street_cam_loitering', 'image_first') %}<a href='{{ state_attr(""sensor.street_cam_loitering"", ""image_first"") }}' target='_blank'><img src='{{ state_attr(""sensor.street_cam_loitering"", ""image_first"") }}?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:8px;cursor:pointer;' /></a>{% else %}No image yet{% endif %}"
                                 }
                                 @{
                                     type    = "markdown"
                                     title   = "Last Seen"
-                                    content = "{% if state_attr('sensor.street_cam_loitering', 'image_last') %}<img src='{{ state_attr(""sensor.street_cam_loitering"", ""image_last"") }}?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:8px;' />{% else %}No image yet{% endif %}"
+                                    content = "{% if state_attr('sensor.street_cam_loitering', 'image_last') %}<a href='{{ state_attr(""sensor.street_cam_loitering"", ""image_last"") }}' target='_blank'><img src='{{ state_attr(""sensor.street_cam_loitering"", ""image_last"") }}?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:8px;cursor:pointer;' /></a>{% else %}No image yet{% endif %}"
                                 }
+                            )
+                        }
+                        @{
+                            type     = "glance"
+                            title    = "Loitering Verification (Today)"
+                            entities = @(
+                                @{ entity = "sensor.street_cam_unconfirmed_loitering_today"; name = "Unconfirmed" }
+                                @{ entity = "sensor.street_cam_confirmed_loitering_today";   name = "Confirmed" }
+                                @{ entity = "sensor.street_cam_false_loitering_today";       name = "Rejected" }
                             )
                         }
                     )
@@ -396,8 +412,8 @@ Track {{ state_attr('sensor.street_cam_loitering', 'track_id') }} | {{ state_att
                         @{
                             type     = "glance"
                             entities = @(
-                                @{ entity = "sensor.street_cam_last_plate";           name = "Last Plate" }
-                                @{ entity = "sensor.street_cam_unknown_plates_today"; name = "Unknown Today" }
+                                @{ entity = "sensor.street_cam_last_plate";          name = "Last Plate" }
+                                @{ entity = "sensor.street_cam_known_plates_today";  name = "Known Today" }
                             )
                         }
                         @{
@@ -417,15 +433,15 @@ No plates detected yet.
                         }
                         @{
                             type    = "markdown"
-                            title   = "Unknown Plates Today"
+                            title   = "Known Plates Today"
                             content = @"
-{% set plates = state_attr('sensor.street_cam_unknown_plates_today', 'plates') %}
+{% set plates = state_attr('sensor.street_cam_known_plates_today', 'plates') %}
 {% if plates and plates | length > 0 %}
-| Plate | Time |
-|-------|------|
-{% for p in plates %}| {{ p.plate }} | {{ p.time[:19] }} |
+| Plate | Owner | Count | Last Seen |
+|-------|-------|-------|-----------|
+{% for p in plates %}| {{ p.plate }} | {{ p.owner }} | {{ p.count }} | {{ p.last_seen[:19] }} |
 {% endfor %}{% else %}
-No unknown plates today.
+No known plates seen today.
 {% endif %}
 "@
                         }
@@ -439,11 +455,11 @@ No unknown plates today.
                         @{
                             type  = "horizontal-stack"
                             cards = @(
-                                @{ type = "markdown"; content = "<img src='/local/street_person_1.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;' />" }
-                                @{ type = "markdown"; content = "<img src='/local/street_person_2.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;' />" }
-                                @{ type = "markdown"; content = "<img src='/local/street_person_3.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;' />" }
-                                @{ type = "markdown"; content = "<img src='/local/street_person_4.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;' />" }
-                                @{ type = "markdown"; content = "<img src='/local/street_person_5.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;' />" }
+                                @{ type = "markdown"; content = "<a href='/local/street_person_1.jpg' target='_blank'><img src='/local/street_person_1.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;cursor:pointer;' /></a>" }
+                                @{ type = "markdown"; content = "<a href='/local/street_person_2.jpg' target='_blank'><img src='/local/street_person_2.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;cursor:pointer;' /></a>" }
+                                @{ type = "markdown"; content = "<a href='/local/street_person_3.jpg' target='_blank'><img src='/local/street_person_3.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;cursor:pointer;' /></a>" }
+                                @{ type = "markdown"; content = "<a href='/local/street_person_4.jpg' target='_blank'><img src='/local/street_person_4.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;cursor:pointer;' /></a>" }
+                                @{ type = "markdown"; content = "<a href='/local/street_person_5.jpg' target='_blank'><img src='/local/street_person_5.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;cursor:pointer;' /></a>" }
                             )
                         }
                     )
@@ -456,11 +472,11 @@ No unknown plates today.
                         @{
                             type  = "horizontal-stack"
                             cards = @(
-                                @{ type = "markdown"; content = "<img src='/local/street_vehicle_1.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;' />" }
-                                @{ type = "markdown"; content = "<img src='/local/street_vehicle_2.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;' />" }
-                                @{ type = "markdown"; content = "<img src='/local/street_vehicle_3.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;' />" }
-                                @{ type = "markdown"; content = "<img src='/local/street_vehicle_4.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;' />" }
-                                @{ type = "markdown"; content = "<img src='/local/street_vehicle_5.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;' />" }
+                                @{ type = "markdown"; content = "<a href='/local/street_vehicle_1.jpg' target='_blank'><img src='/local/street_vehicle_1.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;cursor:pointer;' /></a>" }
+                                @{ type = "markdown"; content = "<a href='/local/street_vehicle_2.jpg' target='_blank'><img src='/local/street_vehicle_2.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;cursor:pointer;' /></a>" }
+                                @{ type = "markdown"; content = "<a href='/local/street_vehicle_3.jpg' target='_blank'><img src='/local/street_vehicle_3.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;cursor:pointer;' /></a>" }
+                                @{ type = "markdown"; content = "<a href='/local/street_vehicle_4.jpg' target='_blank'><img src='/local/street_vehicle_4.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;cursor:pointer;' /></a>" }
+                                @{ type = "markdown"; content = "<a href='/local/street_vehicle_5.jpg' target='_blank'><img src='/local/street_vehicle_5.jpg?t={{ now().timestamp() | int }}' style='max-width:100%;border-radius:4px;cursor:pointer;' /></a>" }
                             )
                         }
                     )
@@ -540,7 +556,7 @@ Write-Host "    - Files: $remoteDestDir" -ForegroundColor White
 Write-Host "    - Scheduled task: HA-CameraObjectDetection (runs at startup)" -ForegroundColor White
 Write-Host "    - Python deps installed (inc. deep-sort-realtime)" -ForegroundColor White
 Write-Host ""
-Write-Host "  HA sensors (19 total):" -ForegroundColor Green
+Write-Host "  HA sensors (22 total):" -ForegroundColor Green
 Write-Host "    - sensor.street_cam_detections_today (total + by_type + hourly attrs)" -ForegroundColor White
 Write-Host "    - sensor.street_cam_people_today" -ForegroundColor White
 Write-Host "    - sensor.street_cam_vehicles_today" -ForegroundColor White
@@ -548,10 +564,13 @@ Write-Host "    - sensor.street_cam_last_detection (timestamp)" -ForegroundColor
 Write-Host "    - sensor.street_cam_last_object" -ForegroundColor White
 Write-Host "    - sensor.street_cam_status (running/error/offline)" -ForegroundColor White
 Write-Host "    - sensor.street_cam_last_plate (plate + owner + known)" -ForegroundColor White
-Write-Host "    - sensor.street_cam_unknown_plates_today (count + list)" -ForegroundColor White
+Write-Host "    - sensor.street_cam_known_plates_today (count + plate list)" -ForegroundColor White
 Write-Host "    - sensor.street_cam_person_1..5 (image gallery)" -ForegroundColor White
 Write-Host "    - sensor.street_cam_vehicle_1..5 (image gallery)" -ForegroundColor White
-Write-Host "    - sensor.street_cam_loitering (clear/alert + details)" -ForegroundColor White
+Write-Host "    - sensor.street_cam_loitering (clear/alert/rejected + details)" -ForegroundColor White
+Write-Host "    - sensor.street_cam_unconfirmed_loitering_today" -ForegroundColor White
+Write-Host "    - sensor.street_cam_confirmed_loitering_today" -ForegroundColor White
+Write-Host "    - sensor.street_cam_false_loitering_today" -ForegroundColor White
 Write-Host ""
 Write-Host "  Dashboard:" -ForegroundColor Green
 Write-Host "    - Street Stats: http://$($Config.HA_IP):8123/street-stats" -ForegroundColor White

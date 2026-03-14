@@ -175,17 +175,21 @@
 - [x] **Loitering detection (DetectObjects3.py + deep-sort-realtime)** — Deep SORT tracker, 60s threshold, TTS + mobile alerts, cropped image to HA
 - [x] **Alerts module (alerts.py)** — shared TTS + mobile notification module, auto-discovers `notify.mobile_app_*`
 - [x] **Dashboard updated** — plate info, image galleries (person/vehicle), conditional loitering alert card
-- [x] **19 HA sensors** — 6 original + 2 plate + 10 image gallery + 1 loitering
-- [x] **Recreate sensors (11-Recreate-Sensors.ps1)** — all 19 street cam sensors added to boot recreate list
+- [x] **22 HA sensors** — 6 original + 2 plate + 10 image gallery + 1 loitering + 3 loitering verification counters
+- [x] **Recreate sensors (11-Recreate-Sensors.ps1)** — all 22 street cam sensors added to boot recreate list
+- [x] **Gemini loitering verification** — two-crop comparison via Gemini Flash confirms same object before alerting; 3 daily counter sensors (unconfirmed/confirmed/false)
+- [x] **Image color fix** — RGB→BGR conversion before cv2.imwrite for gallery crops and loitering crops
+- [x] **Clickable gallery/loitering images** — `<a href>` wrappers open full-resolution images in new tab
 - [ ] **Deploy to server** — run `deploy/15-Setup-ObjectDetection.ps1` to deploy pipeline
 - [ ] **Verify Python dependencies on server** — `pip install -r requirements.txt` (inc. deep-sort-realtime)
 - [ ] **Start scheduled task** — `schtasks /run /tn HA-CameraObjectDetection` or reboot server
 - [ ] **Verify sensors** — check `sensor.street_cam_*` entities in Developer Tools > States (19 total)
 - [ ] **Verify dashboard** — view Street Stats at `http://homeassistant.local:8123/street-stats`
 - [ ] **Verify image gallery** — check `/local/street_person_*.jpg` and `/local/street_vehicle_*.jpg` URLs load
+- [x] **Fix loitering false positives** — gap detection (10s), min hit count (10), reduced max_age (30→10) to prevent different objects triggering alerts
 - [ ] **Test loitering** — stand in front of camera >60s, verify TTS + mobile alert fires
 - [ ] **Kill test** — kill one Python process, verify supervisor restarts it within 30s
-- [ ] **Add known plates** — edit `plate_registry.json` on server to add family/known vehicles
+- [x] **Add known plates** — 3 plates in `plate_registry.json` (KH78WWGP, MR80BWGP, JHS001MP) + replaced unknown plates tracker with known plates daily count sensor
 - [ ] **Improve license plate OCR** — current Tesseract-based OCR is basic; consider cloud OCR or dedicated ANPR model
 
 ## Network & Security
@@ -228,4 +232,4 @@
 
 ---
 
-*Last updated: 2026-03-13 (v2.3.0: Plate registry, image gallery, Deep SORT loitering detection)*
+*Last updated: 2026-03-14 (Gemini loitering verification + image color fix + clickable photos)*

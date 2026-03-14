@@ -91,11 +91,29 @@ LOITERING_THRESHOLD_SECONDS = 60
 LOITERING_ALERT_COOLDOWN = 300  # 5 min
 LOITERING_CLASSES = {"person", "car", "truck", "bus"}
 LOITERING_MIN_CONFIDENCE = 0.7  # Only track high-confidence detections for loitering
-DEEPSORT_MAX_AGE = 30
+LOITERING_MAX_GAP_SECONDS = 30  # Reset track if unseen for this long (Gemini handles false re-ID)
+LOITERING_MIN_HITS = 10  # Minimum detection count before firing alert
+DEEPSORT_MAX_AGE = 30  # Keep tracks alive longer on CPU (was 10, too aggressive for ~2s/frame)
 DEEPSORT_N_INIT = 3
 DEEPSORT_MAX_IOU_DISTANCE = 0.7
 LOITERING_IMAGE_FIRST = "street_loitering_first.jpg"
 LOITERING_IMAGE_LAST = "street_loitering_last.jpg"
+
+# ============================================================
+# Gemini LLM Verification
+# ============================================================
+GEMINI_API_KEY = ""  # Set via env GEMINI_API_KEY, or patched during deploy
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+GEMINI_TIMEOUT = 15
+
+_env_gemini = os.environ.get("GEMINI_API_KEY", "")
+if _env_gemini:
+    GEMINI_API_KEY = _env_gemini
+
+GEMINI_LOITERING_PROMPT = """Analyze these two security camera crops. Image 1 is "first seen", Image 2 is "last seen".
+Are both images of the SAME object (person/car/truck/bus)?
+Respond JSON only: {"same_object": true/false, "description": "brief visual description", "reason": "explanation"}"""
 
 # ============================================================
 # Logging
