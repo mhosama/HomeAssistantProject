@@ -134,6 +134,34 @@ def _save_loitering_images(first_crop, last_crop, track_id):
     return first_url, last_url
 
 
+# Cached loitering toggle state (avoids per-frame HTTP calls to HA)
+_loiter_toggle_cache = True
+_loiter_toggle_last_check = 0
+
+
+def _is_loitering_enabled():
+    """Check HA toggle, cached for 30 seconds."""
+    global _loiter_toggle_cache, _loiter_toggle_last_check
+    now = time.time()
+    if now - _loiter_toggle_last_check < 30:
+        return _loiter_toggle_cache
+    _loiter_toggle_last_check = now
+    if not config.HA_TOKEN:
+        return True
+    try:
+        resp = requests.get(
+            f"{config.HA_URL}/api/states/input_boolean.loitering_detection",
+            headers={"Authorization": f"Bearer {config.HA_TOKEN}"},
+            timeout=3,
+        )
+        if resp.status_code == 200:
+            _loiter_toggle_cache = resp.json().get("state") != "off"
+        # 404 = entity doesn't exist yet, treat as enabled
+    except Exception:
+        logger.debug("Toggle check failed, keeping current state: %s", _loiter_toggle_cache)
+    return _loiter_toggle_cache
+
+
 # Last loitering alert info — preserved when sensor goes to "clear"
 _last_loiter_info = {"object_type": None, "detected_at": None, "duration_seconds": 0,
                      "image_first": None, "image_last": None}
@@ -169,17 +197,22 @@ def _increment_loiter_counter(name):
 
 def check_loitering(tracker, frame, detections_xyxy, class_names, crop_images,
                      track_first_seen, loiter_cooldowns, track_first_crops,
-                     track_last_seen, track_hit_count):
+                     track_last_seen, track_hit_count, track_latest_crops):
     """
     Feed detections to Deep SORT and check for loitering.
     crop_images: list of numpy arrays from results.crop() matching detections_xyxy order.
     track_first_crops: dict[track_id] -> numpy crop of the object when first seen.
+    track_latest_crops: dict[track_id] -> most recent numpy crop (updated every frame).
     track_last_seen: dict[track_id] -> timestamp of last detection (gap detection).
     track_hit_count: dict[track_id] -> number of frames this track was detected in.
     Returns True if a new loitering alert was fired.
     """
     global _last_loiter_info
     now = time.time()
+
+    # Check cached toggle — skip entirely when disabled (don't touch tracker)
+    if not _is_loitering_enabled():
+        return False
 
     # Build detection list for deep-sort-realtime: ([x1, y1, w, h], conf, class_name)
     # Also build a center->crop lookup from YOLOv5's actual crops
@@ -221,6 +254,7 @@ def check_loitering(tracker, frame, detections_xyxy, class_names, crop_images,
                 track_first_seen.pop(track_id, None)
                 track_hit_count[track_id] = 0
                 track_first_crops.pop(track_id, None)
+                track_latest_crops.pop(track_id, None)
 
         # Always update last_seen
         track_last_seen[track_id] = now
@@ -232,11 +266,17 @@ def check_loitering(tracker, frame, detections_xyxy, class_names, crop_images,
             first_crop = _find_best_crop(track, detection_crops)
             if first_crop is not None:
                 track_first_crops[track_id] = first_crop
+                track_latest_crops[track_id] = first_crop
             continue
 
         # Increment hit count
         track_hit_count[track_id] = track_hit_count.get(track_id, 0) + 1
         hits = track_hit_count[track_id]
+
+        # Keep the latest crop updated every frame (for loitering verification)
+        current_crop = _find_best_crop(track, detection_crops)
+        if current_crop is not None:
+            track_latest_crops[track_id] = current_crop
 
         duration = now - track_first_seen[track_id]
 
@@ -249,9 +289,9 @@ def check_loitering(tracker, frame, detections_xyxy, class_names, crop_images,
                 # Always count as unconfirmed first
                 _increment_loiter_counter("unconfirmed")
 
-                # Use YOLOv5 crops: first from when track started, last from current frame
+                # Use YOLOv5 crops: first from when track started, last from most recent frame
                 first_crop = track_first_crops.get(track_id)
-                last_crop = _find_best_crop(track, detection_crops)
+                last_crop = track_latest_crops.get(track_id)
                 first_url, last_url = _save_loitering_images(first_crop, last_crop, track_id)
 
                 # Gemini verification: only fire alert if Gemini explicitly confirms
@@ -347,12 +387,13 @@ def check_loitering(tracker, frame, detections_xyxy, class_names, crop_images,
                                track_id, det_class, int(duration), hits)
 
     # Clear state for gone tracks (stale > 120s)
-    stale_ids = [tid for tid in track_first_seen if tid not in active_track_ids]
+    stale_ids = [tid for tid in list(track_first_seen.keys()) if tid not in active_track_ids]
     for tid in stale_ids:
         if (now - track_first_seen.get(tid, now)) > 120:
             del track_first_seen[tid]
             loiter_cooldowns.pop(tid, None)
             track_first_crops.pop(tid, None)
+            track_latest_crops.pop(tid, None)
             track_last_seen.pop(tid, None)
             track_hit_count.pop(tid, None)
 
@@ -392,9 +433,10 @@ def run():
     # Loitering state
     track_first_seen = {}  # track_id -> first_seen_timestamp
     loiter_cooldowns = {}  # track_id -> last_alert_timestamp
-    track_first_crops = {}  # track_id -> numpy crop of first sighting
-    track_last_seen = {}   # track_id -> last detection timestamp (gap detection)
-    track_hit_count = {}   # track_id -> number of frames detected in
+    track_first_crops = {}   # track_id -> numpy crop of first sighting
+    track_latest_crops = {}  # track_id -> most recent numpy crop (updated every frame)
+    track_last_seen = {}     # track_id -> last detection timestamp (gap detection)
+    track_hit_count = {}     # track_id -> number of frames detected in
 
     logger.info("Watching: %s", config.SAMPLE_DIR)
 
@@ -447,7 +489,7 @@ def run():
                             check_loitering(
                                 tracker, frame, detections, cls_names, crop_images,
                                 track_first_seen, loiter_cooldowns, track_first_crops,
-                                track_last_seen, track_hit_count,
+                                track_last_seen, track_hit_count, track_latest_crops,
                             )
                         else:
                             # No detections — still update tracker with empty list

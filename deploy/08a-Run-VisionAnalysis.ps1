@@ -7,7 +7,7 @@
     Internally loops 6 times at 10-second intervals (effective 10s polling).
     - Each camera has its own schedule (10s/30s/60s/5min/10min/30min/1hr)
     - Time-of-day overrides change schedule at specific hours
-    - Tapo cameras support motion-triggered burst mode (tapering: 10s -> 30s -> 60s)
+    - Tapo cameras support motion-triggered burst mode (tapering: 10s -> 60s -> 120s)
     - Only processes cameras that are "due" each tick (most ticks skip most cameras)
     - Uses mutex to prevent overlapping runs
     - Each camera runs in its own runspace for parallel execution
@@ -48,6 +48,7 @@ $geminiModel = $Config.GeminiModel
 $logDir  = Join-Path $scriptDir "logs"
 $logFile = Join-Path $logDir "vision_analysis.log"
 $stateFile = Join-Path $scriptDir ".vision_state.json"
+$sambaWww = "\\192.168.0.239\config\www"
 
 if (-not (Test-Path $logDir)) { New-Item -Path $logDir -ItemType Directory -Force | Out-Null }
 
@@ -102,6 +103,7 @@ $defaultState = @{
         left_first_open  = $null
         right_first_open = $null
     }
+    detection_history = @{}
     last_run    = ""
 }
 
@@ -148,6 +150,10 @@ if (Test-Path $stateFile) {
             if (-not $state.garage_doors.PSObject.Properties["right_first_open"]) {
                 $state.garage_doors | Add-Member -NotePropertyName "right_first_open" -NotePropertyValue $null -Force
             }
+        }
+        # Ensure detection_history exists
+        if (-not $state.PSObject.Properties["detection_history"]) {
+            $state | Add-Member -NotePropertyName "detection_history" -NotePropertyValue (New-Object PSObject) -Force
         }
     } catch {
         $state = $defaultState | ConvertTo-Json -Depth 5 | ConvertFrom-Json
@@ -202,6 +208,87 @@ $kitchenSpeaker = "media_player.kitchen_speaker"
 $notifyEntity   = $Config.NotifyEntity
 
 # ============================================================
+# Detection history helpers
+# ============================================================
+
+function Test-IsDetection {
+    param([string]$CameraType, [PSObject]$Data)
+    switch ($CameraType) {
+        "chickens" { return ([int]$Data.chicken_count -gt 0 -and $Data.chickens_visible -eq $true) -or ([int]$Data.egg_count -gt 0 -and $Data.eggs_visible -eq $true) }
+        "security" { return ($Data.human_detected -eq $true) }
+        "indoor"   { return ($Data.human_detected -eq $true) }
+        "kitchen"  { return ($Data.human_detected -eq $true -or $Data.food_visible -eq $true) }
+        "gate"     { return ($Data.gate_status -eq "open") }
+        "pool"     { return ([int]$Data.adult_count -gt 0 -or [int]$Data.child_count -gt 0) }
+        "garage"   { return ($Data.left_garage_door -eq "open" -or $Data.right_garage_door -eq "open" -or $Data.human_detected -eq $true) }
+        default    { return $false }
+    }
+}
+
+function Get-DetectionSummary {
+    param([string]$CameraType, [PSObject]$Data)
+    switch ($CameraType) {
+        "chickens" {
+            $parts = @("$($Data.chicken_count) chickens")
+            if ([int]$Data.egg_count -gt 0) { $parts += "$($Data.egg_count) eggs" }
+            return ($parts -join ", ")
+        }
+        "security" { return "Human ($($Data.confidence)): $($Data.description)" }
+        "indoor"   { return "Human ($($Data.confidence)): $($Data.description)" }
+        "kitchen"  {
+            $parts = @()
+            if ($Data.human_detected -eq $true) { $parts += "Human" }
+            if ($Data.food_visible -eq $true -and $Data.food_description) { $parts += "Food: $($Data.food_description)" }
+            return ($parts -join "; ")
+        }
+        "gate"     { return "Gate $($Data.gate_status), $($Data.car_count) cars" }
+        "pool"     { return "$($Data.adult_count) adults, $($Data.child_count) children" }
+        "garage"   {
+            $parts = @("L:$($Data.left_garage_door)", "R:$($Data.right_garage_door)")
+            if ($Data.human_detected -eq $true) { $parts += "Human" }
+            return ($parts -join " ")
+        }
+        default    { return "Detection" }
+    }
+}
+
+function Save-DetectionSnapshot {
+    param([string]$CameraName, [byte[]]$ImageBytes, [string]$Timestamp)
+    if (-not $ImageBytes -or $ImageBytes.Count -eq 0) { return $null }
+
+    try {
+        if (-not (Test-Path $sambaWww)) {
+            Write-Log "Samba www not accessible ($sambaWww) - skipping snapshot save for $CameraName" "WARN"
+            return $null
+        }
+
+        # Get or initialize slot index (1-5 rotating)
+        $slotKey = "${CameraName}_slot"
+        $currentSlot = 0
+        if ($state.detection_history.PSObject.Properties[$slotKey]) {
+            $currentSlot = [int]$state.detection_history.$slotKey
+        }
+        $nextSlot = ($currentSlot % 5) + 1
+
+        $filename = "vision_${CameraName}_${nextSlot}.jpg"
+        $fullPath = Join-Path $sambaWww $filename
+        [IO.File]::WriteAllBytes($fullPath, $ImageBytes)
+
+        # Update slot index in state
+        if ($state.detection_history.PSObject.Properties[$slotKey]) {
+            $state.detection_history.$slotKey = $nextSlot
+        } else {
+            $state.detection_history | Add-Member -NotePropertyName $slotKey -NotePropertyValue $nextSlot -Force
+        }
+
+        return "/local/$filename"
+    } catch {
+        Write-Log "Failed to save snapshot for ${CameraName}: $($_.Exception.Message)" "WARN"
+        return $null
+    }
+}
+
+# ============================================================
 # Camera definitions with schedules
 # ============================================================
 
@@ -220,7 +307,7 @@ $cameras = @(
             @{ From = "07:35"; To = "19:55"; Schedule = $null }   # motion-only during day
             @{ From = "19:55"; To = "20:00"; Schedule = "60s" }
         )
-        MotionSensor = "binary_sensor.chickens_motion"
+        MotionSensor = "binary_sensor.chickens_motion_alarm"
         MotionHours  = @{ From = "07:35"; To = "19:55" }   # motion only active during these hours
     }
     @{
@@ -229,7 +316,7 @@ $cameras = @(
         Type         = "security"
         Schedule     = $null   # motion-only
         TimeOverrides = @()
-        MotionSensor = "binary_sensor.backyard_camera_motion"
+        MotionSensor = "binary_sensor.backyard_camera_motion_alarm"
         MotionHours  = $null   # 24/7
     }
     @{
@@ -238,7 +325,7 @@ $cameras = @(
         Type         = "security"
         Schedule     = $null   # motion-only
         TimeOverrides = @()
-        MotionSensor = "binary_sensor.back_door_camera_motion"
+        MotionSensor = "binary_sensor.back_door_camera_motion_alarm"
         MotionHours  = $null   # 24/7
     }
     @{
@@ -247,7 +334,7 @@ $cameras = @(
         Type         = "security"
         Schedule     = $null   # motion-only
         TimeOverrides = @()
-        MotionSensor = "binary_sensor.veggie_garden_motion"
+        MotionSensor = "binary_sensor.veggie_garden_motion_alarm"
         MotionHours  = $null   # 24/7
     }
     @{
@@ -256,27 +343,23 @@ $cameras = @(
         Type         = "indoor"
         Schedule     = $null   # motion-only
         TimeOverrides = @()
-        MotionSensor = "binary_sensor.dining_room_camera_motion"
+        MotionSensor = "binary_sensor.dining_room_camera_motion_alarm"
         MotionHours  = $null   # 24/7
     }
     @{
         Name         = "Kitchen"
         EntityId     = "camera.kitchen_camera_sd_stream"
         Type         = "kitchen"
-        Schedule     = "30min"
-        TimeOverrides = @(
-            @{ From = "06:00"; To = "08:00"; Schedule = "10min" }
-            @{ From = "11:00"; To = "13:00"; Schedule = "10min" }
-            @{ From = "18:00"; To = "20:00"; Schedule = "10min" }
-        )
-        MotionSensor = $null   # no motion trigger for kitchen
-        MotionHours  = $null
+        Schedule     = $null   # motion-only (was 30min)
+        TimeOverrides = @()
+        MotionSensor = "binary_sensor.kitchen_camera_motion_alarm"
+        MotionHours  = $null   # 24/7
     }
     @{
         Name         = "MainGate"
         EntityId     = "camera.main_gate_camera"
         Type         = "gate"
-        Schedule     = "5min"
+        Schedule     = "10min"
         TimeOverrides = @(
             @{ From = "20:00"; To = "06:00"; Schedule = "30min" }
         )
@@ -287,7 +370,7 @@ $cameras = @(
         Name         = "VisitorGate"
         EntityId     = "camera.visitor_gate_camera"
         Type         = "gate"
-        Schedule     = "5min"
+        Schedule     = "10min"
         TimeOverrides = @(
             @{ From = "20:00"; To = "06:00"; Schedule = "30min" }
         )
@@ -299,10 +382,8 @@ $cameras = @(
         EntityId     = "camera.lawn_camera_sd_stream"
         Type         = "security"
         Schedule     = $null   # motion-only during day
-        TimeOverrides = @(
-            @{ From = "20:00"; To = "06:00"; Schedule = "5min" }   # night: scheduled 5min floor + motion on top
-        )
-        MotionSensor = "binary_sensor.lawn_camera_motion"
+        TimeOverrides = @()
+        MotionSensor = "binary_sensor.lawn_camera_motion_alarm"
         MotionHours  = $null   # 24/7
     }
     @{
@@ -311,8 +392,8 @@ $cameras = @(
         Type         = "pool"
         Schedule     = "1hr"    # RTSP - scheduled only (no ONVIF motion available)
         TimeOverrides = @(
-            @{ From = "06:00"; To = "14:00"; Schedule = "5min" }    # morning: every 5 min
-            @{ From = "14:00"; To = "19:00"; Schedule = "2min" }    # afternoon swim time: every 2 min
+            @{ From = "06:00"; To = "14:00"; Schedule = "30min" }   # morning: every 30 min (was 5min)
+            @{ From = "14:00"; To = "19:00"; Schedule = "5min" }    # afternoon swim time: every 5 min
             @{ From = "19:00"; To = "06:00"; Schedule = "1hr" }     # night: hourly
         )
         MotionSensor = $null
@@ -324,7 +405,7 @@ $cameras = @(
         Type         = "garage"
         Schedule     = "15min"   # RTSP - scheduled only
         TimeOverrides = @(
-            @{ From = "20:00"; To = "06:00"; Schedule = "5min" }   # night: more frequent
+            @{ From = "20:00"; To = "06:00"; Schedule = "10min" }  # night: more frequent
         )
         MotionSensor = $null
         MotionHours  = $null
@@ -333,7 +414,7 @@ $cameras = @(
         Name         = "Lounge"
         EntityId     = "camera.lounge_camera"
         Type         = "indoor"
-        Schedule     = "15min"   # RTSP - scheduled only (no ONVIF motion available)
+        Schedule     = "30min"   # RTSP - scheduled only (no ONVIF motion available)
         TimeOverrides = @()
         MotionSensor = $null
         MotionHours  = $null
@@ -383,9 +464,9 @@ function Get-MotionBurstInterval {
     if ($elapsed -lt 30) {
         return 10    # Rapid phase: every 10s for first 30s
     } elseif ($elapsed -lt 150) {
-        return 30    # Medium phase: every 30s for next 2 minutes (30s-150s)
+        return 60    # Medium phase: every 60s for next 2 minutes (30s-150s)
     } else {
-        return 60    # Slow phase: every 60s until motion stops
+        return 120   # Slow phase: every 120s until motion stops
     }
 }
 
@@ -418,6 +499,9 @@ function Get-CameraScheduleState {
         if (-not $cs.PSObject.Properties["daily_count"]) { $cs | Add-Member -NotePropertyName "daily_count" -NotePropertyValue 0 -Force }
         if (-not $cs.PSObject.Properties["daily_date"]) { $cs | Add-Member -NotePropertyName "daily_date" -NotePropertyValue $today -Force }
         if (-not $cs.PSObject.Properties["daily_history"]) { $cs | Add-Member -NotePropertyName "daily_history" -NotePropertyValue @() -Force }
+        if (-not $cs.PSObject.Properties["motion_trigger_times"]) { $cs | Add-Member -NotePropertyName "motion_trigger_times" -NotePropertyValue @() -Force }
+        if (-not $cs.PSObject.Properties["heavy_activity_until"]) { $cs | Add-Member -NotePropertyName "heavy_activity_until" -NotePropertyValue $null -Force }
+        if (-not $cs.PSObject.Properties["motion_events"]) { $cs | Add-Member -NotePropertyName "motion_events" -NotePropertyValue @() -Force }
         # Reset daily count if new day
         if ($cs.daily_date -ne $today) {
             # Save yesterday's count to history before resetting
@@ -440,9 +524,25 @@ function Get-CameraScheduleState {
         daily_count = 0
         daily_date = $today
         daily_history = @()
+        motion_trigger_times = @()
+        heavy_activity_until = $null
+        motion_events = @()
     }
     $state.camera_schedules | Add-Member -NotePropertyName $CameraName -NotePropertyValue $newState -Force
     return $newState
+}
+
+function Add-MotionEvent {
+    param([PSObject]$CamState, [string]$CameraName, [DateTime]$Now, [string]$Event)
+    if (-not $CamState.PSObject.Properties["motion_events"]) {
+        $CamState | Add-Member -NotePropertyName "motion_events" -NotePropertyValue @() -Force
+    }
+    $entry = [PSCustomObject]@{ time = $Now.ToString("o"); camera = $CameraName; event = $Event }
+    $events = @($CamState.motion_events) + @($entry)
+    # Prune older than 24 hours and cap at 50
+    $cutoff = $Now.AddHours(-24).ToString("o")
+    $events = @($events | Where-Object { $_.time -ge $cutoff }) | Select-Object -Last 50
+    $CamState.motion_events = $events
 }
 
 function Test-CameraDue {
@@ -459,20 +559,61 @@ function Test-CameraDue {
     $isMotionActive = Test-MotionActive -Camera $Camera -Now $Now
 
     if ($isMotionActive) {
-        # Motion is currently active
+        # Motion is currently active — check heavy activity suppression first
+        $heavyUntil = $null
+        if ($camState.heavy_activity_until) {
+            try { $heavyUntil = [DateTime]::Parse($camState.heavy_activity_until) } catch { $heavyUntil = $null }
+        }
+        if ($heavyUntil -and $Now -lt $heavyUntil) {
+            # Still in heavy activity suppression period
+            Write-Log "$($Camera.Name): Heavy activity suppressed (until $($heavyUntil.ToString('HH:mm:ss')))"
+            return $false
+        }
+        if ($heavyUntil -and $Now -ge $heavyUntil) {
+            # Suppression expired — clear it
+            Write-Log "$($Camera.Name): Heavy activity cleared"
+            Add-MotionEvent -CamState $camState -CameraName $Camera.Name -Now $Now -Event "Heavy cleared"
+            $camState.heavy_activity_until = $null
+            $camState.motion_trigger_times = @()
+        }
+
         $motionStarted = $null
         if ($camState.motion_started) {
             try { $motionStarted = [DateTime]::Parse($camState.motion_started) } catch { $motionStarted = $null }
         }
         if (-not $motionStarted) {
-            # New motion event — start burst
+            # New motion event — start burst, analyze immediately
             $camState.motion_started = $Now.ToString("o")
-            $motionStarted = $Now
-            Write-Log "$($Camera.Name): Motion detected, starting burst mode"
+            Write-Log "$($Camera.Name): Motion detected, starting burst mode (immediate first frame)"
+            Add-MotionEvent -CamState $camState -CameraName $Camera.Name -Now $Now -Event "Burst started"
+        }
+
+        # Record this motion trigger timestamp and prune old entries
+        $triggerTimes = @($camState.motion_trigger_times | Where-Object {
+            try { ([DateTime]::Parse($_)) -gt $Now.AddMinutes(-5) } catch { $false }
+        })
+        $triggerTimes += $Now.ToString("o")
+        $camState.motion_trigger_times = $triggerTimes
+
+        # Check for heavy activity (>5 triggers in 5 minutes)
+        if ($triggerTimes.Count -gt 5) {
+            $camState.heavy_activity_until = $Now.AddMinutes(30).ToString("o")
+            $camState.motion_started = $null  # Reset burst so it restarts cleanly after suppression
+            Write-Log "$($Camera.Name): Heavy activity detected ($($triggerTimes.Count) triggers in 5 min), suppressing for 30 min" "WARN"
+            Add-MotionEvent -CamState $camState -CameraName $Camera.Name -Now $Now -Event "Heavy activity ($($triggerTimes.Count) triggers)"
+            return $false
+        }
+
+        # Re-read motionStarted (may have just been set above)
+        if (-not $motionStarted) {
+            # Was just set — first frame is immediate
+            return $true
         }
         $burstInterval = Get-MotionBurstInterval -MotionStarted $motionStarted -Now $Now
         if ($elapsed -ge $burstInterval) {
+            $burstDuration = [math]::Round(($Now - $motionStarted).TotalSeconds)
             Write-Log "$($Camera.Name): Due (motion burst, interval=${burstInterval}s, elapsed=$([math]::Min([math]::Round($elapsed), 999999))s)"
+            Add-MotionEvent -CamState $camState -CameraName $Camera.Name -Now $Now -Event "Burst (${burstDuration}s, ${burstInterval}s interval)"
             return $true
         }
         # In burst but not yet due
@@ -481,6 +622,7 @@ function Test-CameraDue {
         # Motion not active — clear burst state if it was set
         if ($camState.motion_started) {
             Write-Log "$($Camera.Name): Motion ended, exiting burst mode"
+            Add-MotionEvent -CamState $camState -CameraName $Camera.Name -Now $Now -Event "Motion ended"
             $camState.motion_started = $null
         }
     }
@@ -514,6 +656,7 @@ function Test-CameraDue {
 
 $tickCount = 6
 $tickInterval = 10  # seconds
+$script:motionSensorCheckDone = $false
 
 for ($tick = 0; $tick -lt $tickCount; $tick++) {
     # Sleep before ticks 1-5 (not before the first tick)
@@ -559,6 +702,26 @@ if ($motionSensorIds.Count -gt 0) {
     }
 }
 
+# One-time motion sensor diagnostic (first tick only)
+if (-not $script:motionSensorCheckDone -and $motionSensorIds.Count -gt 0) {
+    $foundSensors = @()
+    $missingSensors = @()
+    foreach ($sId in $motionSensorIds) {
+        if ($script:motionStates.ContainsKey($sId)) {
+            $foundSensors += "$sId=$($script:motionStates[$sId])"
+        } else {
+            $missingSensors += $sId
+        }
+    }
+    if ($foundSensors.Count -gt 0) {
+        Write-Log "Motion sensors found ($($foundSensors.Count)): $($foundSensors -join ', ')"
+    }
+    if ($missingSensors.Count -gt 0) {
+        Write-Log "Motion sensors MISSING ($($missingSensors.Count)): $($missingSensors -join ', ') -- check entity IDs in HA Developer Tools > States" "WARN"
+    }
+    $script:motionSensorCheckDone = $true
+}
+
 # ============================================================
 # Determine which cameras are due this run
 # ============================================================
@@ -591,10 +754,10 @@ function Get-CameraPrompt {
     switch ($Camera.Name) {
         "Chickens" {
             return @"
-This is an indoor camera inside a small chicken nesting box. The camera looks down at chickens sleeping on straw/hay bedding. Count every individual chicken you can see, including partially hidden ones. Chickens may be dark-feathered or light-feathered and may overlap.
+This is an indoor camera inside a small chicken nesting box. The camera looks down at chickens sleeping on straw/hay bedding. Count every individual chicken you can see, including partially hidden ones. Chickens may be dark-feathered or light-feathered and may overlap. Also look for any eggs visible in the straw/bedding. Eggs are oval, white or light brown, and may be partially hidden under chickens or straw.
 $nightNote
 Respond with ONLY this JSON:
-{"chicken_count": <integer>, "chickens_visible": <true/false>, "description": "<brief description>"}
+{"chicken_count": <integer>, "chickens_visible": <true/false>, "egg_count": <integer>, "eggs_visible": <true/false>, "description": "<brief description>"}
 "@
         }
         "Backyard" {
@@ -749,10 +912,11 @@ $workerScript = {
     )
 
     $result = @{
-        Camera  = $CameraName
-        Success = $false
-        Data    = $null
-        Error   = $null
+        Camera     = $CameraName
+        Success    = $false
+        Data       = $null
+        Error      = $null
+        ImageBytes = $null
     }
 
     try {
@@ -768,6 +932,7 @@ $workerScript = {
         }
 
         $imageBytes = $snapshotResp.Content
+        $result.ImageBytes = $imageBytes
         $base64Image = [Convert]::ToBase64String($imageBytes)
 
         # 2. Call Gemini API
@@ -907,15 +1072,19 @@ function Send-TTS {
 }
 
 function Send-PhoneAlert {
-    param([string]$Message, [string]$Title = "Vision AI Alert")
+    param([string]$Message, [string]$Title = "Vision AI Alert", [string]$ImageUrl = $null)
     if (-not $notifyEntity) { return }
     $body = @{
         message = $Message
         title   = $Title
-    } | ConvertTo-Json -Depth 5
+    }
+    if ($ImageUrl) {
+        $body.data = @{ image = $ImageUrl }
+    }
+    $jsonBody = $body | ConvertTo-Json -Depth 5
     try {
         $svcName = $notifyEntity -replace "notify\.", ""
-        $null = Invoke-WebRequest -Uri "$haBase/api/services/notify/$svcName" -Method POST -Headers $haHeaders -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -UseBasicParsing -TimeoutSec 15
+        $null = Invoke-WebRequest -Uri "$haBase/api/services/notify/$svcName" -Method POST -Headers $haHeaders -Body ([System.Text.Encoding]::UTF8.GetBytes($jsonBody)) -UseBasicParsing -TimeoutSec 15
         Write-Log "Phone alert sent: $Message"
     } catch {
         Write-Log "Phone alert failed: $($_.Exception.Message)" "ERROR"
@@ -923,10 +1092,10 @@ function Send-PhoneAlert {
 }
 
 function Send-Alert {
-    param([string]$AlertKey, [string]$Message)
+    param([string]$AlertKey, [string]$Message, [string]$ImageUrl = $null)
     $cfg = $alertConfig[$AlertKey]
     if ($cfg.TTS) { Send-TTS $Message }
-    if ($cfg.Phone) { Send-PhoneAlert -Message $Message }
+    if ($cfg.Phone) { Send-PhoneAlert -Message $Message -ImageUrl $ImageUrl }
 }
 
 foreach ($r in $results) {
@@ -944,6 +1113,32 @@ foreach ($r in $results) {
     $camState.last_analyzed = $now.ToString("o")
     $camState.daily_count = [int]$camState.daily_count + 1
 
+    # Record detection history (only when something is actually detected)
+    $imageUrl = $null
+    $camConfig = $cameras | Where-Object { $_.Name -eq $cam } | Select-Object -First 1
+    if ($camConfig -and (Test-IsDetection -CameraType $camConfig.Type -Data $data)) {
+        $imageUrl = Save-DetectionSnapshot -CameraName $cam -ImageBytes $r.ImageBytes -Timestamp $now.ToString("o")
+        $summary = Get-DetectionSummary -CameraType $camConfig.Type -Data $data
+        # Truncate summary to avoid bloating state
+        if ($summary.Length -gt 200) { $summary = $summary.Substring(0, 200) }
+
+        $entry = [PSCustomObject]@{
+            timestamp = $now.ToString("o")
+            summary   = $summary
+            image_url = $imageUrl
+        }
+
+        # Ensure per-camera history array exists
+        $histKey = "${cam}_history"
+        if (-not $state.detection_history.PSObject.Properties[$histKey]) {
+            $state.detection_history | Add-Member -NotePropertyName $histKey -NotePropertyValue @() -Force
+        }
+        # Append and keep max 5
+        $histArray = @($state.detection_history.$histKey) + @($entry)
+        if ($histArray.Count -gt 5) { $histArray = $histArray | Select-Object -Last 5 }
+        $state.detection_history.$histKey = $histArray
+    }
+
     switch -Wildcard ($cam) {
         "Chickens" {
             $count = if ($data.chicken_count -ne $null) { [string]$data.chicken_count } else { "unknown" }
@@ -954,13 +1149,21 @@ foreach ($r in $results) {
                 description         = [string]$data.description
                 last_updated        = $now.ToString("o")
             }
+            $eggCount = if ($data.egg_count -ne $null) { [string]$data.egg_count } else { "0" }
+            Update-HaSensor -EntityId "sensor.egg_count" -State $eggCount -Attributes @{
+                friendly_name       = "Egg Count"
+                icon                = "mdi:egg"
+                unit_of_measurement = "eggs"
+                description         = [string]$data.description
+                last_updated        = $now.ToString("o")
+            }
         }
 
         "Backyard" {
             if ($isNightSecurity -and $data.human_detected -eq $true -and $data.confidence -ne "low") {
                 $alertKey = "Backyard_human"
                 if (-not (Test-AlertThrottled -Key $alertKey)) {
-                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected in the backyard."
+                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected in the backyard." -ImageUrl $imageUrl
                     Set-AlertTime -Key $alertKey
                 }
             }
@@ -970,7 +1173,7 @@ foreach ($r in $results) {
             if ($isNightSecurity -and $data.human_detected -eq $true -and $data.confidence -ne "low") {
                 $alertKey = "BackDoor_human"
                 if (-not (Test-AlertThrottled -Key $alertKey)) {
-                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected at the back door."
+                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected at the back door." -ImageUrl $imageUrl
                     Set-AlertTime -Key $alertKey
                 }
             }
@@ -980,7 +1183,7 @@ foreach ($r in $results) {
             if ($isNightSecurity -and $data.human_detected -eq $true -and $data.confidence -ne "low") {
                 $alertKey = "VeggieGarden_human"
                 if (-not (Test-AlertThrottled -Key $alertKey)) {
-                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected in the veggie garden."
+                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected in the veggie garden." -ImageUrl $imageUrl
                     Set-AlertTime -Key $alertKey
                 }
             }
@@ -991,7 +1194,7 @@ foreach ($r in $results) {
             if ($isAfterMidnight -and $data.human_detected -eq $true -and $data.confidence -ne "low") {
                 $alertKey = "DiningRoom_human"
                 if (-not (Test-AlertThrottled -Key $alertKey)) {
-                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected in the dining room."
+                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected in the dining room." -ImageUrl $imageUrl
                     Set-AlertTime -Key $alertKey
                 }
             }
@@ -1002,7 +1205,7 @@ foreach ($r in $results) {
             if ($isAfterMidnight -and $data.human_detected -eq $true -and $data.confidence -ne "low") {
                 $alertKey = "Kitchen_human"
                 if (-not (Test-AlertThrottled -Key $alertKey)) {
-                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected in the kitchen."
+                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected in the kitchen." -ImageUrl $imageUrl
                     Set-AlertTime -Key $alertKey
                 }
             }
@@ -1124,7 +1327,7 @@ foreach ($r in $results) {
             if ($isNightSecurity -and $data.human_detected -eq $true -and $data.confidence -ne "low") {
                 $alertKey = "Lawn_human"
                 if (-not (Test-AlertThrottled -Key $alertKey)) {
-                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected on the lawn."
+                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected on the lawn." -ImageUrl $imageUrl
                     Set-AlertTime -Key $alertKey
                 }
             }
@@ -1160,7 +1363,7 @@ foreach ($r in $results) {
             if ($isDaytime -and [int]$data.child_count -gt 0 -and [int]$data.adult_count -eq 0) {
                 $alertKey = "Pool_unsupervised_children"
                 if (-not (Test-AlertThrottled -Key $alertKey)) {
-                    Send-Alert -AlertKey $alertKey -Message "Warning. Children detected at the pool with no adult present."
+                    Send-Alert -AlertKey $alertKey -Message "Warning. Children detected at the pool with no adult present." -ImageUrl $imageUrl
                     Set-AlertTime -Key $alertKey
                 }
             }
@@ -1169,7 +1372,7 @@ foreach ($r in $results) {
             if ($isNightSecurity -and $data.human_detected -eq $true -and $data.confidence -ne "low") {
                 $alertKey = "Pool_human"
                 if (-not (Test-AlertThrottled -Key $alertKey)) {
-                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected at the pool area."
+                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected at the pool area." -ImageUrl $imageUrl
                     Set-AlertTime -Key $alertKey
                 }
             }
@@ -1219,7 +1422,7 @@ foreach ($r in $results) {
                             if ($openMinutes -ge 5) {
                                 if (-not (Test-AlertThrottled -Key $alertKey -MinutesCooldown 10)) {
                                     $sideLabel = $side.Substring(0,1).ToUpper() + $side.Substring(1)
-                                    Send-Alert -AlertKey $alertKey -Message "Warning. The $sideLabel garage door has been open for more than 5 minutes."
+                                    Send-Alert -AlertKey $alertKey -Message "Warning. The $sideLabel garage door has been open for more than 5 minutes." -ImageUrl $imageUrl
                                     Set-AlertTime -Key $alertKey
                                 }
                             }
@@ -1239,7 +1442,7 @@ foreach ($r in $results) {
             if ($isNightSecurity -and $data.human_detected -eq $true -and $data.confidence -ne "low") {
                 $alertKey = "Garage_human"
                 if (-not (Test-AlertThrottled -Key $alertKey)) {
-                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected in the garage."
+                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected in the garage." -ImageUrl $imageUrl
                     Set-AlertTime -Key $alertKey
                 }
             }
@@ -1250,7 +1453,7 @@ foreach ($r in $results) {
             if ($isAfterMidnight -and $data.human_detected -eq $true -and $data.confidence -ne "low") {
                 $alertKey = "Lounge_human"
                 if (-not (Test-AlertThrottled -Key $alertKey)) {
-                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected in the lounge."
+                    Send-Alert -AlertKey $alertKey -Message "Security alert. A person has been detected in the lounge." -ImageUrl $imageUrl
                     Set-AlertTime -Key $alertKey
                 }
             }
@@ -1283,7 +1486,60 @@ foreach ($cam in $cameras) {
     $cs = Get-CameraScheduleState -CameraName $cam.Name
     $totalToday += [int]$cs.daily_count
 }
+
+# Collect motion events across all cameras (last 30, newest first)
+$allMotionEvents = @()
+foreach ($cam in $cameras) {
+    $cs = Get-CameraScheduleState -CameraName $cam.Name
+    if ($cs.motion_events) {
+        $allMotionEvents += @($cs.motion_events)
+    }
+    # Expose heavy_until per camera if active
+    if ($cs.heavy_activity_until) {
+        $statsAttributes["$($cam.Name)_heavy_until"] = $cs.heavy_activity_until
+    }
+}
+$allMotionEvents = @($allMotionEvents | Sort-Object { $_.time } | Select-Object -Last 30)
+[array]::Reverse($allMotionEvents)
+if ($allMotionEvents.Count -eq 0) {
+    $statsAttributes["motion_events"] = "[]"
+} elseif ($allMotionEvents.Count -eq 1) {
+    # ConvertTo-Json unwraps single-element arrays to a bare object — force array
+    $statsAttributes["motion_events"] = "[" + ($allMotionEvents[0] | ConvertTo-Json -Depth 5 -Compress) + "]"
+} else {
+    $statsAttributes["motion_events"] = ($allMotionEvents | ConvertTo-Json -Depth 5 -Compress)
+}
+
 Update-HaSensor -EntityId "sensor.vision_analysis_stats" -State "$totalToday" -Attributes $statsAttributes
+
+# ============================================================
+# Update last detections sensor (rolling buffer per camera)
+# ============================================================
+
+$detAttrs = @{
+    friendly_name = "Vision Last Detections"
+    icon          = "mdi:eye"
+    last_updated  = $now.ToString("o")
+}
+$totalDetections = 0
+foreach ($cam in $cameras) {
+    $histKey = "$($cam.Name)_history"
+    $camHist = @()
+    if ($state.detection_history.PSObject.Properties[$histKey]) {
+        $camHist = @($state.detection_history.$histKey)
+    }
+    $detAttrs["$($cam.Name)_count"] = $camHist.Count
+    $totalDetections += $camHist.Count
+    if ($camHist.Count -gt 0) {
+        $latest = $camHist[-1]
+        $detAttrs["$($cam.Name)_last"] = [string]$latest.timestamp
+        $detAttrs["$($cam.Name)_last_summary"] = [string]$latest.summary
+        if ($latest.image_url) {
+            $detAttrs["$($cam.Name)_image"] = [string]$latest.image_url
+        }
+    }
+}
+Update-HaSensor -EntityId "sensor.vision_last_detections" -State "$totalDetections" -Attributes $detAttrs
 
 # ============================================================
 # Save state

@@ -69,6 +69,8 @@
   - Lighting quick toggles
   - Media player status
 - [x] **Energy Dashboard** - combined + per-inverter views with Power Flow Card
+  - [x] Fixed `04b` to be Energy-only (no longer overwrites Overview dashboard)
+  - [ ] **Run `04b-Fix-Battery-SOC.ps1`** to deploy per-inverter PPV1/PPV2 side-by-side layout to live Energy dashboard
 - [x] **Lighting Dashboard** - room-by-room controls using Mushroom cards
 - [x] **Security Dashboard** - door sensors, gates, motion, alarm
 - [x] **Water & Climate Dashboard** - geysers, irrigation, pumps, temps (combined climate + irrigation)
@@ -79,6 +81,13 @@
   - [x] Mini Media Player (04-Setup-Dashboards.ps1)
 - [x] Template sensors: combined inverter totals, lights-on count, doors-open count
 - [x] **Battery Time To Twenty** - TTT sensor + Overview dashboard updated (deploy/05a-Add-TimeToTwenty.ps1)
+- [ ] **Solar-Aware TTT Upgrade** - Solar + cloud-attenuated TTT calculation (deploy/05c-Upgrade-TTT-Solar.ps1)
+  - [ ] Run `09a-Refresh-Weather.ps1` to populate `hourly_cloud_cover` attribute (forecast_days=2)
+  - [ ] Run `05c-Upgrade-TTT-Solar.ps1` to replace TTT sensor + install apexcharts-card + add graph
+  - [ ] Deploy `05d-Refresh-TTT-Projection.ps1` to server with 10-min scheduled task (`HA-RefreshTTTProjection`)
+  - [ ] Deploy updated `11-Recreate-Sensors.ps1` to server
+  - [ ] Verify TTT shows solar-aware values (higher during sunny daytime vs old load-only estimate)
+  - [ ] Verify projection graph on Overview dashboard shows solar/load/SOC curves
 - [x] **Vision AI dashboards updated** - Pool Status + Garage Doors sections added to Security > Vision AI tab + Overview (deploy/08b-Add-VisionDashboard.ps1)
 - [ ] **Info Dashboard** - Run `deploy/14-Setup-InfoDashboard.ps1` to create Info dashboard with vision analysis stats
 - [ ] **Post-deploy**: Verify entity IDs match actual devices (door sensors, motion sensors)
@@ -102,7 +111,7 @@
 - [ ] **HA Companion App** - Install on phone, connect to `http://homeassistant.local:8123`
   - [ ] Grant notification permissions
   - [ ] Run `deploy/07-Setup-PhoneAlerts.ps1` to add push notifications to critical automations
-  - Alerts with phone notifications: Inverter Room High Temp, Battery Full, Gate Open
+  - Alerts with phone notifications: Inverter Room High Temp, Battery Full, Gate Open, Inverter Door Closed Hot
 
 ## Weather Briefing (Open-Meteo + Gemini)
 
@@ -122,9 +131,14 @@
 - [x] Gate Open Alert - TTS + phone notification when main/visitor gate opens
 - [x] Geyser & Borehole Alert - TTS on kitchen speaker when geysers or borehole pump switch on/off (deploy/05b-Add-Geyser-Alerts.ps1)
 - [x] Battery Fully Charged - TTS + phone notification when SOC >= 99%, once per day
-- [x] Inverter Room High Temp - TTS + phone notification when inverter room temp reaches 30°C+ (sensor.sonoff_a48007a2b0_temperature)
+- [x] Inverter Room High Temp - TTS + phone notification when inverter room temp reaches 28°C+ (sensor.sonoff_a48007a2b0_temperature)
+  - [x] Added to Overview dashboard (Climate Summary) and Water & Climate dashboard (Climate section)
+  - [x] Lowered alert threshold from 30°C to 28°C
+- [x] **Inverter Room Door Closed Hot** - TTS + push when temp >= 25°C and door is closed (deploy/07-Setup-PhoneAlerts.ps1)
 - [ ] ~~Geyser Schedule~~ - Removed (Sonoff switches have built-in timers)
-- [ ] ~~Goodnight Routine~~ - Removed
+- [x] **Good Night Routine** - Kitchen door closes 20:00-02:00 → lights off + bedroom TTS with battery/gate/garage status (deploy/05c-Setup-GoodNight.ps1)
+  - [x] Fixed midnight gap: replaced OR time condition with single midnight-wrapping condition
+  - [x] Deployed to HA via `05c-Setup-GoodNight.ps1` (2026-03-18)
 - [ ] ~~Door Left Open Alert~~ - Removed (too noisy)
 - [ ] Irrigation schedules (time-based, possibly weather-aware)
 - [ ] Pool pump schedule
@@ -147,6 +161,7 @@
 - [x] ~~**Verify light auto-off**~~ - Removed: light analysis via AI removed in v2.0 scheduling rewrite (will use Sonoff switch states instead)
 - [ ] **Verify Tapo motion sensor entity IDs** - Check HA Developer Tools > States for `binary_sensor.*_motion` entities from Tapo cameras. Update entity IDs in `08a-Run-VisionAnalysis.ps1` if they differ from assumed names.
 - [ ] **Verify chicken count** - Check `sensor.chicken_count` updates correctly
+- [ ] **Verify egg count** - Check `sensor.egg_count` updates after next chickens camera analysis cycle; verify on Vision AI dashboard
 - [ ] **Verify food detection** - Check meal sensors during breakfast/lunch/dinner windows
   - [x] Food items now accumulate with timestamps (e.g. "toast and eggs (07:30), porridge (07:45)")
   - [x] Fuzzy dedup prevents duplicate detections; longer descriptions replace shorter ones
@@ -158,10 +173,19 @@
   - New sensors: `sensor.left_garage_door`, `sensor.right_garage_door`
   - Door timing tracked in `.vision_state.json` under `garage_doors`
   - [x] Added to Security > Vision AI tab + Overview dashboard
+- [x] **Cost reduction** - Reduced polling frequency: Kitchen→motion-only, MainGate/VisitorGate→10min, Pool morning→30min, Lawn night override removed
+- [x] **Motion burst tweaks** - Taper changed to 10s→60s→120s, first motion frame immediate, heavy activity suppression (>5 triggers in 5min → 30min cooldown), Pool afternoon→5min, Garage night→10min, Lounge→30min
+- [x] **Motion sensor diagnostics** - First-tick logging shows found/missing motion sensors to catch wrong entity IDs
+- [x] **Motion sensor entity IDs fixed** - Tapo cameras use `*_motion_alarm` not `*_motion` (7 sensors corrected in 08a)
+- [x] **Detection history** - `sensor.vision_last_detections` with last 5 detections per camera (only actual detections), snapshots saved to Samba `/local/vision_*.jpg`
+- [x] **Detection history dashboards** - Recent Detections sections on Security > Vision AI tab + Farm Cameras tab with clickable snapshot images
+  - `sensor.farm_last_detections` mirrors home camera pattern for EZVIZ cameras
+  - Snapshots saved to `/local/farm_detect_{N}_{slot}.jpg`
 - [ ] **Monitor logs** - Check `deploy/logs/vision_analysis.log` for scheduling decisions and camera counts
 - [ ] **Check daily analysis counts** - Monitor `sensor.vision_analysis_stats` for per-camera daily counts (attributes: `*_today`, `*_history`). 30-day history stored in state file.
 - [ ] **Add phone notifications** - Update alert actions once Companion App `notify.mobile_app_*` entity is available
 - [ ] **Implement light auto-off via Sonoff switches** - Replace removed AI-based light detection with actual switch state monitoring for dining/kitchen/lounge lights
+- [ ] **Consider event-driven motion triggers** - Current motion detection relies on 10s polling from host server, which could miss brief motion events (<10s). Could add HA automations that set `input_boolean` flags on motion state change, ensuring no events are lost between polls. Low priority since Tapo `motion_alarm` entities hold `on` state for 30-60s.
 
 ## Street Camera Object Detection (YOLOv5)
 
@@ -175,7 +199,7 @@
 - [x] **Loitering detection (DetectObjects3.py + deep-sort-realtime)** — Deep SORT tracker, 60s threshold, TTS + mobile alerts, cropped image to HA
 - [x] **Alerts module (alerts.py)** — shared TTS + mobile notification module, auto-discovers `notify.mobile_app_*`
 - [x] **Dashboard updated** — plate info, image galleries (person/vehicle), conditional loitering alert card
-- [x] **22 HA sensors** — 6 original + 2 plate + 10 image gallery + 1 loitering + 3 loitering verification counters
+- [x] **23 HA sensors** — 6 original + 2 plate + 1 plate OCR stats + 10 image gallery + 1 loitering + 3 loitering verification counters
 - [x] **Recreate sensors (11-Recreate-Sensors.ps1)** — all 22 street cam sensors added to boot recreate list
 - [x] **Gemini loitering verification** — two-crop comparison via Gemini Flash confirms same object before alerting; 3 daily counter sensors (unconfirmed/confirmed/false)
 - [x] **Image color fix** — RGB→BGR conversion before cv2.imwrite for gallery crops and loitering crops
@@ -190,7 +214,11 @@
 - [ ] **Test loitering** — stand in front of camera >60s, verify TTS + mobile alert fires
 - [ ] **Kill test** — kill one Python process, verify supervisor restarts it within 30s
 - [x] **Add known plates** — 3 plates in `plate_registry.json` (KH78WWGP, MR80BWGP, JHS001MP) + replaced unknown plates tracker with known plates daily count sensor
-- [ ] **Improve license plate OCR** — current Tesseract-based OCR is basic; consider cloud OCR or dedicated ANPR model
+- [x] **Tightened fuzzy plate matching** — min plate length raised from 3→5, tier 3 requires detected text >= 60% of registry plate length (prevents short OCR fragments like "ELY" matching full plates)
+- [x] **Known plate image on dashboard** — markdown card with `<img>` tag showing last known plate crop
+- [x] **Known plate image persistence** — `entity_picture` now persisted in plate state; unknown plates no longer wipe the last known plate image
+- [x] **Plate crop orientation fix** — aspect-ratio-aware rotation + dual-orientation OCR with SA province suffix scoring
+- [x] **Improve license plate OCR** — replaced Tesseract with Gemini Flash as primary OCR (Tesseract kept as fallback). SA plate format validation, daily OCR stats sensor + Info dashboard tab
 
 ## Network & Security
 
@@ -204,9 +232,24 @@
 
 > See `docs/INTEGRATIONS-PLANNED.md` for full research details on each.
 
-- [ ] **Life360** — HACS `pnbruckner/ha-life360`, location tracking + driving state, zone automations (arrival/departure, presence-based heating)
-  - Viable but uses undocumented API (built-in integration was removed in 2024.2)
-  - User has Gold/Platinum membership
+- [x] **Life360** — HACS `pnbruckner/ha-life360`, location tracking + driving state, presence dashboard
+  - [x] Setup script created: `deploy/16-Setup-Life360.ps1` (HACS install + config flow + automations)
+  - [x] Dashboard script created: `deploy/16a-Add-Life360Dashboard.ps1` (map + member cards + history)
+  - [x] Extract Life360 access token from browser (email-code auth workaround)
+  - [x] Add `Life360TokenType` + `Life360AccessToken` to `deploy/config.ps1`
+  - [x] Run `16-Setup-Life360.ps1` — HACS installed, config flow completed, 5 members discovered
+  - [x] Run `16a-Add-Life360Dashboard.ps1` — Presence dashboard + Overview section created
+  - [x] Device trackers: Mauritz, Chandré, Lizette, Melandi, Mauritz (2nd device)
+  - [x] Arrival/departure automations created with real entity IDs
+  - [x] Entity renames: mauritz_kloppers_2→Oupa, lizette_kloppers→Ouma, chandre_kloppers→Chandre
+  - [x] TTS pronunciation fix: Chandre→Shandrey via Jinja replace() filter
+  - [x] Samsung phone tracker hidden from dashboard (entity kept as backup)
+  - [x] Run `_rename_life360.ps1` to apply entity renames
+  - [x] Run `_update_life360_automations.ps1` to fix automations
+  - [x] Run `16a-Add-Life360Dashboard.ps1` to rebuild dashboard without samsung_phone
+  - [x] Fixed dashboard to use Life360 `place` attribute instead of HA `state` (home/not_home)
+  - [ ] Test arrival/departure TTS on kitchen speaker
+  - Uses undocumented API (built-in integration was removed in 2024.2). User has Gold/Platinum membership.
 - [ ] **Garmin Dashcam** — BLOCKED: no public API, no HA integration exists. Revisit later.
 - [ ] **Google Find Hub** — HACS `BSkando/GoogleFindMy-HA`, Horizen tags + phones, 60-min polling
   - Complex auth setup (Python script to generate `secrets.json`)
@@ -232,4 +275,12 @@
 
 ---
 
-*Last updated: 2026-03-14 (Gemini loitering verification + image color fix + clickable photos)*
+## Deployment Integrity
+
+- [x] **Integrity check script** - `deploy/17-Integrity-Check.ps1` validates sensors, cameras, automations, dashboards, scheduled tasks
+  - Run with `-IncludeTasks` on server to also check scheduled tasks + host processes + log freshness + sensor recency
+  - Current: 55 sensors, 20 cameras, 12 automations, 9 dashboards, 8 scheduled tasks, 5 host processes
+- [x] **Garage camera stale image fix** - `Test-IsDetection` now includes `human_detected` for garage camera, so person alerts get fresh snapshots
+- [x] **Good Night automation deployed** - `05c-Setup-GoodNight.ps1` run against HA (was previously only a local script)
+
+*Last updated: 2026-03-19 (Gemini plate OCR, plate OCR stats sensor, Info dashboard Street Camera tab)*

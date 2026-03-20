@@ -86,14 +86,16 @@ $isNightSecurity = ($hour -ge 20) -or ($hour -lt 6)    # 8PM - 6AM
 # ============================================================
 
 $defaultState = @{
-    last_alerts = @{}
-    last_run    = ""
+    last_alerts       = @{}
+    last_run          = ""
+    detection_history = @{}
 }
 
 if (Test-Path $stateFile) {
     try {
         $state = Get-Content $stateFile -Raw | ConvertFrom-Json
         if (-not $state.last_alerts) { $state | Add-Member -NotePropertyName "last_alerts" -NotePropertyValue @{} -Force }
+        if (-not $state.PSObject.Properties["detection_history"]) { $state | Add-Member -NotePropertyName "detection_history" -NotePropertyValue (New-Object PSObject) -Force }
     } catch {
         $state = $defaultState | ConvertTo-Json -Depth 5 | ConvertFrom-Json
     }
@@ -138,6 +140,42 @@ $notifyEntity   = $Config.NotifyEntity
 
 # Battery threshold: skip capture if battery below this, but still poll battery level
 $lowBatteryThreshold = 20
+
+$sambaWww = "\\192.168.0.239\config\www"
+
+function Save-FarmDetectionSnapshot {
+    param([int]$CamNum, [byte[]]$ImageBytes, [string]$Timestamp)
+    if (-not $ImageBytes -or $ImageBytes.Count -eq 0) { return $null }
+
+    try {
+        if (-not (Test-Path $sambaWww)) {
+            Write-Log "Samba www not accessible ($sambaWww) - skipping snapshot for FarmCam$CamNum" "WARN"
+            return $null
+        }
+
+        $slotKey = "FarmCam${CamNum}_slot"
+        $currentSlot = 0
+        if ($state.detection_history.PSObject.Properties[$slotKey]) {
+            $currentSlot = [int]$state.detection_history.$slotKey
+        }
+        $nextSlot = ($currentSlot % 5) + 1
+
+        $filename = "farm_detect_${CamNum}_${nextSlot}.jpg"
+        $fullPath = Join-Path $sambaWww $filename
+        [IO.File]::WriteAllBytes($fullPath, $ImageBytes)
+
+        if ($state.detection_history.PSObject.Properties[$slotKey]) {
+            $state.detection_history.$slotKey = $nextSlot
+        } else {
+            $state.detection_history | Add-Member -NotePropertyName $slotKey -NotePropertyValue $nextSlot -Force
+        }
+
+        return "/local/$filename"
+    } catch {
+        Write-Log "Failed to save snapshot for FarmCam${CamNum}: $($_.Exception.Message)" "WARN"
+        return $null
+    }
+}
 
 # ============================================================
 # Camera definitions (EZVIZ serial numbers from device registry)
@@ -321,11 +359,12 @@ $workerScript = {
     )
 
     $result = @{
-        Camera  = $CameraName
-        Success = $false
-        Data    = $null
-        PicUrl  = $null
-        Error   = $null
+        Camera     = $CameraName
+        Success    = $false
+        Data       = $null
+        PicUrl     = $null
+        ImageBytes = $null
+        Error      = $null
     }
 
     try {
@@ -367,6 +406,7 @@ $workerScript = {
 
         # 3. Save captured image to HA /config/www/ via Samba for dashboard display
         $result.PicUrl = $picUrl
+        $result.ImageBytes = $imageBytes
         $camNum = $CameraName -replace "FarmCam", ""
         try {
             $sambaPath = "\\192.168.0.239\config\www\farm_cam${camNum}_latest.jpg"
@@ -586,6 +626,27 @@ foreach ($r in $results) {
 
     Update-HaSensor -EntityId "sensor.farm_cam_${camIndex}_status" -State $stateText -Attributes $sensorAttrs
 
+    # Record detection history (only when something is detected)
+    if ($stateText -ne "clear") {
+        $imageUrl = Save-FarmDetectionSnapshot -CamNum $camIndex -ImageBytes $r.ImageBytes -Timestamp $now.ToString("o")
+        $summary = $stateText
+        if ($summary.Length -gt 200) { $summary = $summary.Substring(0, 200) }
+
+        $entry = [PSCustomObject]@{
+            timestamp = $now.ToString("o")
+            summary   = $summary
+            image_url = $imageUrl
+        }
+
+        $histKey = "FarmCam${camIndex}_history"
+        if (-not $state.detection_history.PSObject.Properties[$histKey]) {
+            $state.detection_history | Add-Member -NotePropertyName $histKey -NotePropertyValue @() -Force
+        }
+        $histArray = @($state.detection_history.$histKey) + @($entry)
+        if ($histArray.Count -gt 5) { $histArray = $histArray | Select-Object -Last 5 }
+        $state.detection_history.$histKey = $histArray
+    }
+
     # Aggregate humans
     if ($data.humans.count -gt 0) {
         $totalHumans += [int]$data.humans.count
@@ -682,6 +743,36 @@ Update-HaSensor -EntityId "sensor.farm_human_vehicle_summary" -State $hvState -A
 }
 
 # ============================================================
+# Update farm last detections sensor (rolling buffer per camera)
+# ============================================================
+
+$detAttrs = @{
+    friendly_name = "Farm Last Detections"
+    icon          = "mdi:eye"
+    last_updated  = $now.ToString("o")
+}
+$totalFarmDetections = 0
+foreach ($cam in $cameras) {
+    $camIdx = $cam.Name -replace "FarmCam", ""
+    $histKey = "FarmCam${camIdx}_history"
+    $camHist = @()
+    if ($state.detection_history.PSObject.Properties[$histKey]) {
+        $camHist = @($state.detection_history.$histKey)
+    }
+    $detAttrs["FarmCam${camIdx}_count"] = $camHist.Count
+    $totalFarmDetections += $camHist.Count
+    if ($camHist.Count -gt 0) {
+        $latest = $camHist[-1]
+        $detAttrs["FarmCam${camIdx}_last"] = [string]$latest.timestamp
+        $detAttrs["FarmCam${camIdx}_last_summary"] = [string]$latest.summary
+        if ($latest.image_url) {
+            $detAttrs["FarmCam${camIdx}_image"] = [string]$latest.image_url
+        }
+    }
+}
+Update-HaSensor -EntityId "sensor.farm_last_detections" -State "$totalFarmDetections" -Attributes $detAttrs
+
+# ============================================================
 # Alerts — all detections, always (TTS + phone, with throttling)
 # ============================================================
 
@@ -736,7 +827,7 @@ if ($rainDetected) {
 # ============================================================
 
 $state | Add-Member -NotePropertyName "last_run" -NotePropertyValue $now.ToString("o") -Force
-$state | ConvertTo-Json -Depth 5 | Set-Content $stateFile -Encoding UTF8
+$state | ConvertTo-Json -Depth 10 | Set-Content $stateFile -Encoding UTF8
 
 $successCount = ($results | Where-Object { $_.Success }).Count
 Write-Log "=== Run complete: $successCount/$($camerasToCapture.Count) captured, $($cameras.Count - $camerasToCapture.Count) skipped (low battery) ==="

@@ -15,6 +15,8 @@ import platform
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
+import base64
+
 import cv2
 import numpy as np
 import pytesseract
@@ -79,7 +81,8 @@ def _load_plate_state():
                 return json.load(f)
         except Exception:
             pass
-    return {"cooldowns": {}, "known_today": {}, "known_date": ""}
+    return {"cooldowns": {}, "known_today": {}, "known_date": "",
+            "last_known_image": "", "last_known_owner": ""}
 
 
 def _save_plate_state(state):
@@ -116,9 +119,172 @@ def _is_night_time(night_start, night_end):
         return now >= night_start or now <= night_end
 
 
-def check_plate_registry(plate_text):
+# OCR confusable characters — normalize lookalikes to digits
+_CONFUSABLES = str.maketrans("OISZB", "01528")
+
+
+def _normalize_confusables(text):
+    """Map OCR-confusable letters to their digit lookalikes."""
+    return text.translate(_CONFUSABLES)
+
+
+# ============================================================
+# Plate OCR daily stats (persisted to disk)
+# ============================================================
+
+def _load_plate_ocr_stats():
+    """Load plate OCR stats from disk, reset on new day."""
+    path = config.PLATE_OCR_STATS_PATH
+    today = datetime.now().strftime("%Y-%m-%d")
+    default = {"gemini_calls_today": 0, "tesseract_calls_today": 0,
+               "plates_detected_today": 0, "known_plates_today": 0, "date": today}
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                stats = json.load(f)
+            if stats.get("date") != today:
+                return default
+            return stats
+        except Exception:
+            pass
+    return default
+
+
+def _save_plate_ocr_stats(stats):
+    """Save plate OCR stats to disk."""
+    try:
+        with open(config.PLATE_OCR_STATS_PATH, "w") as f:
+            json.dump(stats, f, indent=2)
+    except Exception:
+        logger.exception("Error saving plate OCR stats")
+
+
+# ============================================================
+# SA plate validation
+# ============================================================
+
+_SA_PLATE_RE = re.compile(r"^[A-Z]{1,3}[0-9]{1,3}[A-Z]{2,3}$")
+
+
+def _validate_sa_plate(text):
+    """Check if text matches SA license plate format (6-9 chars)."""
+    if not text or len(text) < 6 or len(text) > 9:
+        return False
+    return bool(_SA_PLATE_RE.match(text))
+
+
+# ============================================================
+# Gemini plate OCR
+# ============================================================
+
+def _gemini_read_plate(img_bgr):
+    """Send a car crop image to Gemini Flash for plate reading.
+
+    Args:
+        img_bgr: BGR numpy array (OpenCV format)
+
+    Returns:
+        (plate_text, confidence) or ("", 0) on failure
+    """
+    if not config.GEMINI_API_KEY:
+        logger.debug("No GEMINI_API_KEY — skipping Gemini plate OCR")
+        return ("", 0)
+
+    # Encode image to base64 JPEG
+    success, buf = cv2.imencode(".jpg", img_bgr)
+    if not success:
+        logger.warning("Failed to encode image for Gemini plate OCR")
+        return ("", 0)
+    b64_img = base64.b64encode(buf).decode("utf-8")
+
+    url = (
+        f"{config.GEMINI_API_URL}/{config.GEMINI_MODEL}:generateContent"
+        f"?key={config.GEMINI_API_KEY}"
+    )
+
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": config.GEMINI_PLATE_PROMPT},
+                    {
+                        "inline_data": {
+                            "mime_type": "image/jpeg",
+                            "data": b64_img,
+                        }
+                    },
+                ]
+            }
+        ],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.1,
+        },
+    }
+
+    # Track stats
+    stats = _load_plate_ocr_stats()
+    stats["gemini_calls_today"] = stats.get("gemini_calls_today", 0) + 1
+    _save_plate_ocr_stats(stats)
+
+    try:
+        resp = requests.post(url, json=payload, timeout=config.GEMINI_TIMEOUT)
+        if resp.status_code != 200:
+            logger.warning("Gemini plate API error %d: %s", resp.status_code, resp.text[:200])
+            return ("", 0)
+
+        data = resp.json()
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        result = json.loads(text)
+
+        plate = re.sub(r"[^A-Z0-9]", "", result.get("plate", "").upper())
+        confidence = float(result.get("confidence", 0))
+
+        logger.info("Gemini plate: %s (conf=%.2f)", plate, confidence)
+        return (plate, confidence)
+
+    except (requests.RequestException, KeyError, json.JSONDecodeError, ValueError) as e:
+        logger.warning("Gemini plate OCR failed: %s", e)
+        return ("", 0)
+
+
+def _levenshtein(s1, s2):
+    """Compute Levenshtein edit distance between two strings."""
+    if len(s1) < len(s2):
+        return _levenshtein(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    prev = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr = [i + 1]
+        for j, c2 in enumerate(s2):
+            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (c1 != c2)))
+        prev = curr
+    return prev[-1]
+
+
+def _best_substring_distance(registry_plate, detected_text):
+    """Slide registry plate over detected text, return min Levenshtein distance.
+    Handles detected text being longer (extra OCR chars) + substitution errors."""
+    rlen = len(registry_plate)
+    dlen = len(detected_text)
+    if dlen < rlen:
+        return _best_substring_distance(detected_text, registry_plate)
+    if rlen == 0:
+        return dlen
+    best = _levenshtein(registry_plate, detected_text)
+    for i in range(dlen - rlen + 1):
+        window = detected_text[i:i + rlen]
+        dist = _levenshtein(registry_plate, window)
+        best = min(best, dist)
+        if best == 0:
+            return 0
+    return best
+
+
+def check_plate_registry(plate_text, crop_path=None):
     """Look up a detected plate against the registry and fire alerts."""
-    if not plate_text or len(plate_text) < 3:
+    if not plate_text or len(plate_text) < 5:
         return
 
     registry = _load_plate_registry()
@@ -133,7 +299,7 @@ def check_plate_registry(plate_text):
 
     # Normalize plate: uppercase, strip non-alphanumeric
     normalized = re.sub(r"[^A-Z0-9]", "", plate_text.upper())
-    if len(normalized) < 3:
+    if len(normalized) < 5:
         return
 
     # Check cooldown
@@ -141,30 +307,79 @@ def check_plate_registry(plate_text):
     on_cooldown = (now - last_alert) < config.PLATE_ALERT_COOLDOWN
 
     plates_dict = registry.get("plates", {})
-    # Substring match: check if any registry plate appears within the detected text
-    # (OCR often adds extra characters). Case-insensitive.
     match_key = None
     match_info = None
     for reg_plate, info in plates_dict.items():
         reg_normalized = re.sub(r"[^A-Z0-9]", "", reg_plate.upper())
+        # Tier 1: exact substring
         if reg_normalized in normalized or normalized in reg_normalized:
             match_key = reg_plate
             match_info = info
+            break
+        # Tier 2: confusable-normalized substring
+        reg_conf = _normalize_confusables(reg_normalized)
+        det_conf = _normalize_confusables(normalized)
+        if reg_conf in det_conf or det_conf in reg_conf:
+            match_key = reg_plate
+            match_info = info
+            logger.info("Fuzzy plate match (confusable): detected=%s registry=%s", normalized, reg_normalized)
+            break
+        # Tier 3: sliding-window Levenshtein <= 2 (only if detected text is >= 60% of registry plate length)
+        if len(det_conf) < len(reg_conf) * 0.6:
+            continue
+        dist = _best_substring_distance(reg_conf, det_conf)
+        if dist <= 2:
+            match_key = reg_plate
+            match_info = info
+            logger.info("Fuzzy plate match (distance=%d): detected=%s registry=%s", dist, normalized, reg_normalized)
             break
 
     is_known = match_info is not None
     owner = match_info.get("owner", "Unknown") if match_info else "Unknown"
 
-    # Push last plate sensor
-    _push_sensor("sensor.street_cam_last_plate", normalized, {
+    # Copy crop image to HA www for known plates
+    plate_image_url = ""
+    if is_known and crop_path and os.path.isfile(crop_path):
+        samba_dir = config.HA_WWW_SAMBA
+        if os.path.isdir(samba_dir):
+            dest = os.path.join(samba_dir, "street_known_plate.jpg")
+            try:
+                img = cv2.imread(crop_path)
+                if img is not None:
+                    img_fixed = img[:, :, ::-1]  # fix R↔B channel swap from YOLOv5
+                    cv2.imwrite(dest, img_fixed)
+                else:
+                    shutil.copy2(crop_path, dest)
+                plate_image_url = "/local/street_known_plate.jpg"
+                logger.info("Known plate image copied to %s", dest)
+            except Exception:
+                logger.exception("Failed to copy plate crop to HA www")
+
+    # Persist last known plate image in state so it survives unknown plate detections
+    if is_known and plate_image_url:
+        state["last_known_image"] = plate_image_url
+        state["last_known_owner"] = owner
+
+    # Push last plate sensor — always include entity_picture from current or persisted known plate
+    effective_image = plate_image_url or state.get("last_known_image", "")
+    attrs = {
         "friendly_name": "Street Cam Last Plate",
         "icon": "mdi:car-info",
         "owner": owner,
         "known": is_known,
         "time": datetime.now().isoformat(),
-    })
+        "last_known_owner": state.get("last_known_owner", ""),
+    }
+    if effective_image:
+        attrs["entity_picture"] = effective_image
+    _push_sensor("sensor.street_cam_last_plate", normalized, attrs)
 
     if is_known:
+        # Increment known plates count in OCR stats
+        ocr_stats = _load_plate_ocr_stats()
+        ocr_stats["known_plates_today"] = ocr_stats.get("known_plates_today", 0) + 1
+        _save_plate_ocr_stats(ocr_stats)
+
         # Track known plate daily sightings
         reg_upper = re.sub(r"[^A-Z0-9]", "", match_key.upper())
         if reg_upper not in state["known_today"]:
@@ -279,12 +494,83 @@ def rotate_image(image, angle):
     return ndimage.rotate(image, angle, cval=255)
 
 
+_SA_PROVINCES = {"GP", "WP", "NW", "MP", "LP", "FS", "KZN", "EC", "NC"}
+
+
+def _score_ocr_result(text):
+    """Score an OCR result: higher = more likely correctly oriented.
+    SA province suffix match is a strong signal; alphanumeric count is secondary."""
+    clean = re.sub(r"[^A-Z0-9]", "", text.upper())
+    score = len(clean)  # base: number of valid alphanumeric chars
+    # Check for SA province suffix (last 2-3 chars)
+    for suffix in _SA_PROVINCES:
+        if clean.endswith(suffix):
+            score += 50  # strong bonus for province match
+            break
+    return score, clean
+
+
+def _ocr_on_image(img_bgr):
+    """Run OCR on a BGR image, return (score, clean_text, gray_image)."""
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    tess_config = "--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    text1 = pytesseract.image_to_string(gray, lang="eng", config=tess_config)
+    text2 = pytesseract.image_to_string(blur, lang="eng", config=tess_config)
+    score1, clean1 = _score_ocr_result(text1)
+    score2, clean2 = _score_ocr_result(text2)
+    if score1 >= score2:
+        return score1, clean1, gray
+    return score2, clean2, gray
+
+
 def save_license_plate(path_to_file, path_to_save):
-    """Attempt OCR on a car crop to extract license plate text."""
+    """Attempt OCR on a car crop to extract license plate text.
+
+    Two-pass approach:
+    Pass 1: Send full car crop to Gemini (skips contour detection entirely)
+    Pass 2: Contour-based extraction + Tesseract fallback (only if Gemini fails)
+
+    Backlog protection: files older than 120s skip Gemini (too expensive for
+    thousands of backlogged files) and skip alerts (stale detections shouldn't
+    trigger notifications).
+    """
     try:
         original_image = cv2.imread(path_to_file)
         if original_image is None:
             return
+
+        # Check file age — skip expensive OCR + alerts for backlogged files
+        file_age = time.time() - os.path.getmtime(path_to_file)
+        is_stale = file_age > 120  # older than 2 minutes
+        if is_stale:
+            logger.debug("Skipping plate OCR for stale file (%.0fs old): %s", file_age, path_to_file)
+            return
+
+        stats = _load_plate_ocr_stats()
+
+        # === Pass 1: Gemini on the full car crop ===
+        plate_text, confidence = _gemini_read_plate(original_image)
+        if confidence >= config.PLATE_GEMINI_CONFIDENCE and _validate_sa_plate(plate_text):
+            logger.info("Gemini plate accepted: %s (conf=%.2f)", plate_text, confidence)
+            out_path = f"{path_to_save}_{plate_text}_gemini.jpg"
+            gray = cv2.cvtColor(original_image, cv2.COLOR_BGR2GRAY)
+            cv2.imwrite(out_path, gray)
+            stats["plates_detected_today"] = stats.get("plates_detected_today", 0) + 1
+            _save_plate_ocr_stats(stats)
+            try:
+                check_plate_registry(plate_text, crop_path=path_to_file)
+            except Exception:
+                logger.exception("Plate registry check error for %s", plate_text)
+            return
+
+        if plate_text:
+            logger.debug("Gemini plate rejected: '%s' (conf=%.2f, valid=%s)",
+                         plate_text, confidence, _validate_sa_plate(plate_text))
+
+        # === Pass 2: Contour-based extraction + Tesseract fallback ===
+        stats["tesseract_calls_today"] = stats.get("tesseract_calls_today", 0) + 1
+        _save_plate_ocr_stats(stats)
 
         gray_image = cv2.cvtColor(original_image, cv2.COLOR_BGR2GRAY)
         gray_image = cv2.bilateralFilter(gray_image, 11, 17, 17)
@@ -299,12 +585,13 @@ def save_license_plate(path_to_file, path_to_save):
 
             if len(approx) == 4:
                 x, y, w, h = cv2.boundingRect(c)
-                (_, _), (_, _), angle_of_rotation = cv2.minAreaRect(c)
+                rect = cv2.minAreaRect(c)
+                (cx, cy), (rw, rh), angle = rect
 
                 resX, resY = gray_image.shape[1], gray_image.shape[0]
                 target = np.full((resY, resX, 3), 255, dtype=np.uint8)
                 mask = np.zeros((resY, resX, 1), dtype=np.uint8)
-                box_points = np.intp(cv2.boxPoints(cv2.minAreaRect(c)))
+                box_points = np.intp(cv2.boxPoints(rect))
                 cv2.drawContours(mask, [box_points], -1, (255), -1)
 
                 inv = 255 - original_image
@@ -312,31 +599,47 @@ def save_license_plate(path_to_file, path_to_save):
                 target = 255 - target
                 new_img = target[y : y + h, x : x + w]
 
-                img_rotated = rotate_image(new_img, -90 + angle_of_rotation)
-                gray = cv2.cvtColor(img_rotated, cv2.COLOR_BGR2GRAY)
-                blur = cv2.GaussianBlur(gray, (3, 3), 0)
-                thresh = cv2.adaptiveThreshold(
-                    blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 33, 14
-                )
-                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-                opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
+                # Aspect-ratio-aware rotation: ensure plate is landscape
+                rotation_angle = angle
+                if rw < rh:
+                    rotation_angle += 90
+
+                img_rotated = rotate_image(new_img, rotation_angle)
+
+                # Enforce landscape: if still taller than wide, rotate 90°
+                rh2, rw2 = img_rotated.shape[:2]
+                if rh2 > rw2:
+                    img_rotated = rotate_image(img_rotated, 90)
+
+                # Dual-orientation OCR: try normal and 180° flipped, pick best
+                img_flipped = cv2.rotate(img_rotated, cv2.ROTATE_180)
+
+                score_normal, text_normal, gray_normal = _ocr_on_image(img_rotated)
+                score_flipped, text_flipped, gray_flipped = _ocr_on_image(img_flipped)
+
+                if score_flipped > score_normal:
+                    best_text = text_flipped
+                    best_gray = gray_flipped
+                else:
+                    best_text = text_normal
+                    best_gray = gray_normal
 
                 idx += 1
-                text = pytesseract.image_to_string(gray, lang="eng")
-                text_blur = pytesseract.image_to_string(blur, lang="eng")
-
-                # Use whichever result is longer
-                best = text if len(text) >= len(text_blur) else text_blur
-                if len(best) > 4:
-                    clean = re.sub(r"[\W_]", "", best)
-                    out_path = f"{path_to_save}_{clean}_{idx}.jpg"
-                    cv2.imwrite(out_path, gray)
-                    logger.info("Plate OCR: %s -> %s", clean, out_path)
-                    # Check against plate registry
-                    try:
-                        check_plate_registry(clean)
-                    except Exception:
-                        logger.exception("Plate registry check error for %s", clean)
+                if len(best_text) > 4:
+                    out_path = f"{path_to_save}_{best_text}_{idx}.jpg"
+                    cv2.imwrite(out_path, best_gray)
+                    logger.info("Tesseract plate OCR: %s -> %s", best_text, out_path)
+                    # Only check registry for plates passing SA format validation
+                    if _validate_sa_plate(best_text):
+                        stats = _load_plate_ocr_stats()
+                        stats["plates_detected_today"] = stats.get("plates_detected_today", 0) + 1
+                        _save_plate_ocr_stats(stats)
+                        try:
+                            check_plate_registry(best_text, crop_path=path_to_file)
+                        except Exception:
+                            logger.exception("Plate registry check error for %s", best_text)
+                    else:
+                        logger.debug("Tesseract plate rejected (invalid SA format): %s", best_text)
 
     except Exception:
         logger.exception("OCR error on %s", path_to_file)

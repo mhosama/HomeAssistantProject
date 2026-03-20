@@ -68,7 +68,7 @@ Write-Log "=== Weather briefing run starting ==="
 # STEP 1: Fetch Open-Meteo forecast
 # ============================================================
 
-$meteoUrl = "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&hourly=temperature_2m,cloud_cover,precipitation,wind_speed_10m,relative_humidity_2m,weather_code&timezone=Africa/Johannesburg&forecast_days=1"
+$meteoUrl = "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&hourly=temperature_2m,cloud_cover,precipitation,wind_speed_10m,relative_humidity_2m,weather_code&timezone=Africa/Johannesburg&forecast_days=2"
 
 Write-Log "Fetching Open-Meteo forecast..."
 
@@ -104,6 +104,17 @@ for ($i = 0; $i -lt $hourly.time.Count; $i++) {
         }
     }
 }
+
+# Build 48-element array of ALL hourly cloud cover values (for solar-aware TTT)
+$hourlyCloud = @()
+for ($i = 0; $i -lt $hourly.time.Count; $i++) {
+    $hourlyCloud += @{
+        hour      = $hourly.time[$i]
+        cloud_pct = $hourly.cloud_cover[$i]
+    }
+}
+
+Write-Log "Built hourly cloud cover array: $($hourlyCloud.Count) entries"
 
 $today = (Get-Date).ToString("yyyy-MM-dd")
 
@@ -261,8 +272,9 @@ $sensorBody = @{
         conditions       = $conditions
         tts_text         = $ttsText
         detailed_summary = $detailedSummary
-        forecast_hours   = $daytimeHours.Count
-        last_updated     = (Get-Date).ToString("o")
+        forecast_hours       = $daytimeHours.Count
+        hourly_cloud_cover   = $hourlyCloud
+        last_updated         = (Get-Date).ToString("o")
     }
 } | ConvertTo-Json -Depth 5
 

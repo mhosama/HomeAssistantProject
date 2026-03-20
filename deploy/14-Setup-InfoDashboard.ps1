@@ -158,6 +158,98 @@ Per-camera daily totals (last 7 days, newest first):
 $historyRows
 "@
 
+# Build Jinja2 template for active suppressions
+$suppressionContent = @"
+{% set sensor = 'sensor.vision_analysis_stats' -%}
+{% set ns = namespace(rows=[]) -%}
+{% for cam in [$( ($cameraNames | ForEach-Object { "'$_'" }) -join ", " )] -%}
+  {%- set heavy = state_attr(sensor, cam ~ '_heavy_until') -%}
+  {%- if heavy -%}
+    {%- set ns.rows = ns.rows + [cam ~ ' | ' ~ (as_timestamp(heavy) | timestamp_custom('%H:%M:%S'))] -%}
+  {%- endif -%}
+{%- endfor -%}
+{% if ns.rows | length > 0 -%}
+| Camera | Suppressed Until |
+|--------|-----------------|
+{% for row in ns.rows -%}
+| {{ row }} |
+{% endfor -%}
+{% else -%}
+*No cameras currently suppressed.*
+{% endif %}
+"@
+
+# Build Jinja2 template for motion events log
+$motionEventsContent = @"
+{% set events_json = state_attr('sensor.vision_analysis_stats', 'motion_events') -%}
+{% if events_json and events_json != '[]' -%}
+{% set events = events_json | from_json -%}
+| Time | Camera | Event |
+|------|--------|-------|
+{% for e in events -%}
+| {{ as_timestamp(e.time) | timestamp_custom('%H:%M:%S') }} | {{ e.camera }} | {{ e.event }} |
+{% endfor -%}
+{% else -%}
+*No motion events in the last 24 hours.*
+{% endif %}
+"@
+
+# Count suppressed cameras for header
+$suppressedCountTemplate = @"
+{% set sensor = 'sensor.vision_analysis_stats' -%}
+{% set ns = namespace(count=0) -%}
+{% for cam in [$( ($cameraNames | ForEach-Object { "'$_'" }) -join ", " )] -%}
+  {%- if state_attr(sensor, cam ~ '_heavy_until') -%}
+    {%- set ns.count = ns.count + 1 -%}
+  {%- endif -%}
+{%- endfor -%}
+{% if ns.count > 0 -%}{{ ns.count }} camera(s) suppressed{% else -%}All cameras active{% endif %}
+"@
+
+$streetDetectionTemplate = @"
+## Detection Counts (Today)
+
+| Metric | Value |
+|--------|-------|
+| Total Detections | {{ states('sensor.street_cam_detections_today') }} |
+| People | {{ states('sensor.street_cam_people_today') }} |
+| Vehicles | {{ states('sensor.street_cam_vehicles_today') }} |
+| Last Detection | {{ states('sensor.street_cam_last_detection') }} |
+| Last Object | {{ states('sensor.street_cam_last_object') }} |
+| Status | {{ states('sensor.street_cam_status') }} |
+"@
+
+$plateOcrTemplate = @"
+## Plate OCR Stats (Today)
+
+| Metric | Value |
+|--------|-------|
+| Gemini Calls | {{ state_attr('sensor.street_cam_plate_ocr_stats', 'gemini_calls_today') | default(0) }} |
+| Tesseract Fallback | {{ state_attr('sensor.street_cam_plate_ocr_stats', 'tesseract_calls_today') | default(0) }} |
+| Plates Detected | {{ state_attr('sensor.street_cam_plate_ocr_stats', 'plates_detected_today') | default(0) }} |
+| Known Plates Matched | {{ state_attr('sensor.street_cam_plate_ocr_stats', 'known_plates_today') | default(0) }} |
+| Last Plate | {{ states('sensor.street_cam_last_plate') }} ({{ state_attr('sensor.street_cam_last_plate', 'owner') | default('unknown') }}) |
+"@
+
+$hourlyDetectionTemplate = @"
+## Hourly Detections
+
+{% set hourly = state_attr('sensor.street_cam_detections_today', 'hourly') -%}
+{% if hourly -%}
+| Hour | Count |
+|------|-------|
+{% for h in range(24) -%}
+{% set hkey = '%02d' % h -%}
+{% set count = hourly.get(hkey, 0) if hourly is mapping else 0 -%}
+{% if count > 0 -%}
+| {{ hkey }}:00 | {{ count }} |
+{% endif -%}
+{% endfor -%}
+{% else -%}
+*No hourly data available.*
+{% endif %}
+"@
+
 $dashboardConfig = @{
     views = @(
         @{
@@ -197,6 +289,60 @@ $dashboardConfig = @{
                 }
             )
         }
+        @{
+            title = "Motion Activity"
+            path  = "motion-activity"
+            icon  = "mdi:motion-sensor"
+            cards = @(
+                @{
+                    type       = "custom:mushroom-template-card"
+                    primary    = "Motion Activity"
+                    icon       = "mdi:motion-sensor"
+                    icon_color = "orange"
+                    secondary  = $suppressedCountTemplate
+                }
+                @{
+                    type    = "markdown"
+                    title   = "Active Suppressions"
+                    content = $suppressionContent
+                }
+                @{
+                    type    = "markdown"
+                    title   = "Recent Motion Events (24h)"
+                    content = $motionEventsContent
+                }
+            )
+        }
+        @{
+            title = "Street Camera"
+            path  = "street-camera"
+            icon  = "mdi:cctv"
+            cards = @(
+                @{
+                    type       = "custom:mushroom-template-card"
+                    primary    = "Street Camera Stats"
+                    icon       = "mdi:cctv"
+                    icon_color = "blue"
+                    secondary  = "{{ states('sensor.street_cam_detections_today') }} detections today"
+                    entity     = "sensor.street_cam_detections_today"
+                }
+                @{
+                    type    = "markdown"
+                    title   = "Detection Counts"
+                    content = $streetDetectionTemplate
+                }
+                @{
+                    type    = "markdown"
+                    title   = "Plate OCR Stats"
+                    content = $plateOcrTemplate
+                }
+                @{
+                    type    = "markdown"
+                    title   = "Hourly Detections"
+                    content = $hourlyDetectionTemplate
+                }
+            )
+        }
     )
 }
 
@@ -228,5 +374,7 @@ Write-Step "Info Dashboard Setup Complete"
 Write-Host ""
 Write-Host "  Info dashboard:" -ForegroundColor Green
 Write-Host "    - Vision Analysis Stats: today's total, per-camera counts, daily history" -ForegroundColor White
+Write-Host "    - Motion Activity: event log, active suppressions" -ForegroundColor White
+Write-Host "    - Street Camera: detection counts, plate OCR stats, hourly breakdown" -ForegroundColor White
 Write-Host "    - View at: http://$($Config.HA_IP):8123/info-dashboard" -ForegroundColor White
 Write-Host ""

@@ -115,6 +115,15 @@ GEMINI_LOITERING_PROMPT = """Analyze these two security camera crops. Image 1 is
 Are both images of the SAME object (person/car/truck/bus)?
 Respond JSON only: {"same_object": true/false, "description": "brief visual description", "reason": "explanation"}"""
 
+GEMINI_PLATE_PROMPT = """Read the license plate text from this image of a vehicle. This is a South African license plate.
+SA plate format: 2-3 letters, 2-3 digits, then a 2-letter province code (GP, WP, NW, MP, LP, FS, KZN, EC, NC).
+Examples: KH78WWGP, MR80BWGP, JHS001MP, DC39SHGP
+Return JSON only: {"plate": "ABC123GP", "confidence": 0.95}
+If no plate is readable, return: {"plate": "", "confidence": 0}"""
+
+PLATE_GEMINI_CONFIDENCE = 0.4  # minimum confidence to accept Gemini result
+PLATE_OCR_STATS_PATH = os.path.join(SCRIPT_DIR, ".plate_ocr_stats.json")
+
 # ============================================================
 # Logging
 # ============================================================

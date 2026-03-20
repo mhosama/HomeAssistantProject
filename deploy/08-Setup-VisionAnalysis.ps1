@@ -49,6 +49,7 @@ Write-Step "1/3 - Creating Vision Analysis Sensors"
 
 $sensors = @(
     @{ entity_id = "sensor.chicken_count";          state = "unknown"; attributes = @{ friendly_name = "Chicken Count";          icon = "mdi:chicken";         unit_of_measurement = "chickens" } }
+    @{ entity_id = "sensor.egg_count";              state = "0";       attributes = @{ friendly_name = "Egg Count";              icon = "mdi:egg";             unit_of_measurement = "eggs" } }
     @{ entity_id = "sensor.breakfast_food";          state = "unknown"; attributes = @{ friendly_name = "Breakfast Food";         icon = "mdi:food-croissant"  } }
     @{ entity_id = "sensor.lunch_food";              state = "unknown"; attributes = @{ friendly_name = "Lunch Food";             icon = "mdi:food"            } }
     @{ entity_id = "sensor.dinner_food";             state = "unknown"; attributes = @{ friendly_name = "Dinner Food";            icon = "mdi:food-turkey"     } }

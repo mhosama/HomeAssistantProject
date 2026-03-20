@@ -7,9 +7,10 @@
     existing automations to add phone notifications alongside existing TTS alerts.
 
     Automations updated:
-    1. Inverter Room High Temp - "Warning: Inverter room is at X°C"
-    2. Battery Fully Charged   - "Batteries are now fully charged"
-    3. Gate Open Alert         - "Main/visitor gate opened"
+    1. Inverter Room High Temp      - "Warning: Inverter room is at X°C"
+    2. Battery Fully Charged        - "Batteries are now fully charged"
+    3. Gate Open Alert              - "Main/visitor gate opened"
+    4. Inverter Room Door Closed Hot - "Inverter room is hot and door is closed"
 
     Prerequisites:
     - HA Companion App installed on phone and connected to HA
@@ -84,11 +85,14 @@ $batterySoc = "sensor.battery_soc"
 # Temperature sensor (inverter room)
 $inverterRoomTemp = "sensor.sonoff_a48007a2b0_temperature"
 
+# Inverter room door sensor
+$inverterRoomDoor = "binary_sensor.sonoff_a48003e73f"
+
 # ============================================================
 # STEP 1: Discover mobile app notify service
 # ============================================================
 
-Write-Step "1/5 - Discovering Companion App"
+Write-Step "1/6 - Discovering Companion App"
 
 Write-Info "Querying /api/services for notify.mobile_app_* ..."
 
@@ -138,14 +142,14 @@ if ($mobileApps.Count -gt 1) {
 # STEP 2: Update Inverter Room High Temp automation
 # ============================================================
 
-Write-Step "2/5 - Inverter Room High Temp (with phone notification)"
+Write-Step "2/6 - Inverter Room High Temp (with phone notification)"
 
 $inverterJson = @"
 {
   "alias": "Inverter Room High Temp",
-  "description": "TTS alert + phone notification when inverter room temperature reaches 30C or above",
+  "description": "TTS alert + phone notification when inverter room temperature reaches 28C or above",
   "mode": "single",
-  "trigger": [{"platform": "numeric_state", "entity_id": "$inverterRoomTemp", "above": 30}],
+  "trigger": [{"platform": "numeric_state", "entity_id": "$inverterRoomTemp", "above": 28}],
   "condition": [
     {"condition": "template", "value_template": "{{ (as_timestamp(now()) - as_timestamp(state_attr('automation.inverter_room_high_temp', 'last_triggered') | default(0))) > 3600 }}"}
   ],
@@ -172,7 +176,7 @@ try {
 # STEP 3: Update Battery Fully Charged automation
 # ============================================================
 
-Write-Step "3/5 - Battery Fully Charged (with phone notification)"
+Write-Step "3/6 - Battery Fully Charged (with phone notification)"
 
 $batteryJson = @"
 {
@@ -206,7 +210,7 @@ try {
 # STEP 4: Update Gate Open Alert automation
 # ============================================================
 
-Write-Step "4/5 - Gate Open Alert (with phone notification)"
+Write-Step "4/6 - Gate Open Alert (with phone notification)"
 
 $gateJson = @"
 {
@@ -247,7 +251,58 @@ try {
 # STEP 5: Test notification
 # ============================================================
 
-Write-Step "5/5 - Test Phone Notification"
+Write-Step "5/6 - Inverter Room Door Closed + Hot (TTS + phone)"
+
+$doorHeatJson = @"
+{
+  "alias": "Inverter Room Door Closed Hot",
+  "description": "TTS alert + phone notification when inverter room temp exceeds 25C and the door is closed",
+  "mode": "single",
+  "trigger": [{"platform": "numeric_state", "entity_id": "$inverterRoomTemp", "above": 25}],
+  "condition": [
+    {"condition": "state", "entity_id": "$inverterRoomDoor", "state": "off"},
+    {"condition": "template", "value_template": "{{ (as_timestamp(now()) - as_timestamp(state_attr('automation.inverter_room_door_closed_hot', 'last_triggered') | default(0))) > 3600 }}"}
+  ],
+  "action": [
+    {"service": "tts.speak", "target": {"entity_id": "$ttsEngine"}, "data": {"media_player_entity_id": "$kitchenSpeaker", "message": "Warning. The inverter room temperature is {{ states('$inverterRoomTemp') | round(0) }} degrees and the door is closed. Please open the inverter room door."}},
+    {"service": "$mobileAppService", "data": {"title": "Inverter Room Door Closed", "message": "Inverter room is at {{ states('$inverterRoomTemp') | round(0) }}\u00b0C and the door is closed. Please open it."}}
+  ]
+}
+"@
+
+Write-Info "Creating automation..."
+try {
+    $resp = Invoke-HAREST -Endpoint "/api/config/automation/config/inverter_room_door_closed_hot" -Method "POST" -JsonBody $doorHeatJson
+    if ($resp -and $resp.StatusCode -eq 200) {
+        Write-Success "Inverter Room Door Closed Hot automation created"
+    } else {
+        Write-Fail "Failed to create Inverter Room Door Closed Hot"
+    }
+} catch {
+    Write-Info "Request sent (may have timed out, but automation should still be created)"
+}
+
+# ============================================================
+# STEP 6: Rename inverter room door sensor
+# ============================================================
+
+Write-Info "Renaming door sensor to 'Inverter Room Door'..."
+try {
+    # Use REST API to update entity registry
+    $renameJson = '{"name": "Inverter Room Door"}'
+    $resp = Invoke-HAREST -Endpoint "/api/config/entity_registry/entity/$inverterRoomDoor" -Method "POST" -JsonBody $renameJson
+    if ($resp) {
+        Write-Success "Door sensor renamed to 'Inverter Room Door'"
+    }
+} catch {
+    Write-Info "Could not rename sensor (may need WebSocket API - non-critical)"
+}
+
+# ============================================================
+# STEP 7: Test notification
+# ============================================================
+
+Write-Step "6/6 - Test Phone Notification"
 
 Start-Sleep -Seconds 5
 
@@ -255,7 +310,7 @@ Write-Info "Sending test notification to $mobileAppService ..."
 $testJson = @"
 {
   "title": "Home Assistant",
-  "message": "Phone notifications are now active! You will receive alerts for: inverter room temp, battery full, gate opened."
+  "message": "Phone notifications are now active! You will receive alerts for: inverter room temp, battery full, gate opened, inverter door closed + hot."
 }
 "@
 
@@ -280,9 +335,10 @@ Write-Host ""
 Write-Host "  Notify service: $mobileAppService" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Automations updated with phone notifications:" -ForegroundColor Green
-Write-Host "    1. Inverter Room High Temp  - TTS + push when temp >= 30C" -ForegroundColor White
-Write-Host "    2. Battery Fully Charged    - TTS + push when SOC >= 99%" -ForegroundColor White
-Write-Host "    3. Gate Open Alert          - TTS + push when gate opens" -ForegroundColor White
+Write-Host "    1. Inverter Room High Temp      - TTS + push when temp >= 28C" -ForegroundColor White
+Write-Host "    2. Battery Fully Charged        - TTS + push when SOC >= 99%" -ForegroundColor White
+Write-Host "    3. Gate Open Alert              - TTS + push when gate opens" -ForegroundColor White
+Write-Host "    4. Inverter Door Closed Hot     - TTS + push when temp >= 25C and door closed" -ForegroundColor White
 Write-Host ""
 Write-Host "  TTS alerts are preserved - phone notifications are added alongside." -ForegroundColor Yellow
 Write-Host ""

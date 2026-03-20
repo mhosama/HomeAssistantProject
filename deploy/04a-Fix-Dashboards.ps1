@@ -242,8 +242,10 @@ $water = @{
 
 # --- Temperature ---
 $temp = @{
-    MainBedTemp     = "sensor.sonoff_a48003e78d_temperature"
-    MainBedHumidity = "sensor.sonoff_a48003e78d_humidity"
+    MainBedTemp          = "sensor.sonoff_a48003e78d_temperature"
+    MainBedHumidity      = "sensor.sonoff_a48003e78d_humidity"
+    InverterRoomTemp     = "sensor.sonoff_a48007a2b0_temperature"
+    InverterRoomHumidity = "sensor.sonoff_a48007a2b0_humidity"
 }
 
 # --- Media ---
@@ -373,13 +375,13 @@ $overviewConfig = @{
                         @{
                             type    = "custom:mushroom-template-card"
                             primary = "Energy"
-                            secondary = "Solar: {{ states('sensor.solar_total_generation') }}W | Battery: {{ states('sensor.solar_battery_soc_average') }}%"
+                            secondary = "Solar: {{ states('sensor.solar_total_generation') }}W | Battery: {{ states('sensor.battery_soc') }}%"
                             icon    = "mdi:solar-power"
                             icon_color = "amber"
                             tap_action = @{ action = "navigate"; navigation_path = "/energy-dashboard" }
                         },
                         @{
-                            type = "gauge"; entity = "sensor.solar_battery_soc_average"; name = "Battery"
+                            type = "gauge"; entity = "sensor.battery_soc"; name = "Battery (40kWh)"
                             min = 0; max = 100; severity = @{ green = 50; yellow = 20; red = 0 }
                         },
                         @{
@@ -412,12 +414,19 @@ $overviewConfig = @{
                     cards = @(
                         @{
                             type = "custom:mushroom-template-card"; primary = "Climate"
-                            secondary = "{{ states('$($temp.MainBedTemp)') }}°C | {{ states('$($temp.MainBedHumidity)') }}%"
+                            secondary = "Bed: {{ states('$($temp.MainBedTemp)') }}°C | Inverter: {{ states('$($temp.InverterRoomTemp)') }}°C"
                             icon = "mdi:thermometer"; icon_color = "teal"
                             tap_action = @{ action = "navigate"; navigation_path = "/water-climate-dashboard" }
                         },
                         @{ type = "custom:mushroom-entity-card"; entity = $sw.MainGeyser; name = "Main Geyser"; icon = "mdi:water-boiler" },
-                        @{ type = "custom:mushroom-entity-card"; entity = $sw.FlatGeyser; name = "Flat Geyser"; icon = "mdi:water-boiler" }
+                        @{ type = "custom:mushroom-entity-card"; entity = $sw.FlatGeyser; name = "Flat Geyser"; icon = "mdi:water-boiler" },
+                        @{
+                            type = "grid"; columns = 2; square = $false
+                            cards = @(
+                                @{ type = "custom:mushroom-entity-card"; entity = $temp.InverterRoomTemp; name = "Inverter Room"; icon = "mdi:thermometer-alert" },
+                                @{ type = "custom:mushroom-entity-card"; entity = $temp.InverterRoomHumidity; name = "Inverter Humidity"; icon = "mdi:water-percent" }
+                            )
+                        }
                     )
                 },
                 # --- Lighting Summary ---
@@ -882,6 +891,13 @@ $waterClimateConfig = @{
                             cards = @(
                                 @{ type = "custom:mushroom-entity-card"; entity = $temp.MainBedTemp; name = "Main Bedroom Temp"; icon = "mdi:thermometer" },
                                 @{ type = "custom:mushroom-entity-card"; entity = $temp.MainBedHumidity; name = "Main Bedroom Humidity"; icon = "mdi:water-percent" }
+                            )
+                        },
+                        @{
+                            type = "grid"; columns = 2; square = $false
+                            cards = @(
+                                @{ type = "custom:mushroom-entity-card"; entity = $temp.InverterRoomTemp; name = "Inverter Room Temp"; icon = "mdi:thermometer-alert" },
+                                @{ type = "custom:mushroom-entity-card"; entity = $temp.InverterRoomHumidity; name = "Inverter Room Humidity"; icon = "mdi:water-percent" }
                             )
                         },
                         @{ type = "custom:mushroom-entity-card"; entity = $sw.Aircon; name = "Living Room Aircon"; icon = "mdi:air-conditioner"; tap_action = @{ action = "toggle" } },

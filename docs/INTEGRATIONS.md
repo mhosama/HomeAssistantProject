@@ -403,7 +403,7 @@ Research has been completed for the following integrations. See **[INTEGRATIONS-
 
 | Integration | Type | Viability | Notes |
 |---|---|---|---|
-| Life360 | HACS (`pnbruckner/ha-life360`) | Viable | Location tracking, zone automations. Undocumented API risk. |
+| Life360 | HACS (`pnbruckner/ha-life360`) | **Ready** | Setup script created (`16-Setup-Life360.ps1`). Needs browser token extraction. |
 | Garmin Dashcam | None | Blocked | No public API, no integration exists. |
 | Google Find Hub | HACS (`BSkando/GoogleFindMy-HA`) | Viable | Horizen tags + phones. Complex auth, SA coverage spotty. |
 | EZVIZ Farm Cameras | Built-in (`ezviz`) | **In Progress** | Scripts created, pending deployment. See Priority 11 below. |

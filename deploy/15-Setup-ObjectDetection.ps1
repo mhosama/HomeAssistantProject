@@ -433,6 +433,18 @@ No plates detected yet.
                         }
                         @{
                             type    = "markdown"
+                            title   = "Last Known Plate Image"
+                            content = @"
+{% if state_attr('sensor.street_cam_last_plate', 'known') == true and state_attr('sensor.street_cam_last_plate', 'entity_picture') %}
+<img src="{{ state_attr('sensor.street_cam_last_plate', 'entity_picture') }}?t={{ now().timestamp() | int }}" style="max-width:100%;border-radius:8px;" />
+**{{ state_attr('sensor.street_cam_last_plate', 'owner') }}** — {{ states('sensor.street_cam_last_plate') }}
+{% else %}
+No known plate image yet.
+{% endif %}
+"@
+                        }
+                        @{
+                            type    = "markdown"
                             title   = "Known Plates Today"
                             content = @"
 {% set plates = state_attr('sensor.street_cam_known_plates_today', 'plates') %}

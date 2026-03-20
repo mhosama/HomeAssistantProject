@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-    Fix battery SOC to use Inverter 1 as the combined 40kWh reading.
+    Fix Energy dashboard: battery SOC gauge + per-inverter PPV1/PPV2 layout.
+    Energy-only — does NOT touch the Overview dashboard (managed by 04a + additive scripts).
 #>
 
 $ErrorActionPreference = "Stop"
@@ -55,129 +56,9 @@ $inv1 = "sensor.sunsynk_320152_2207207800"
 $inv2 = "sensor.sunsynk_320152_2305136364"
 
 # ============================================================
-# Overview Dashboard - use sensor.battery_soc for gauge
-# ============================================================
-
-Write-Info "Saving Overview dashboard..."
-
-$overviewConfig = @{
-    title = "Home"
-    views = @(
-        @{
-            title = "Overview"; path = "overview"; icon = "mdi:home"
-            cards = @(
-                # Energy
-                @{
-                    type = "vertical-stack"
-                    cards = @(
-                        @{
-                            type = "custom:mushroom-template-card"; primary = "Energy"
-                            secondary = "Solar: {{ states('sensor.solar_total_generation') }}W | Battery: {{ states('sensor.battery_soc') }}%"
-                            icon = "mdi:solar-power"; icon_color = "amber"
-                            tap_action = @{ action = "navigate"; navigation_path = "/energy-dashboard" }
-                        },
-                        @{
-                            type = "gauge"; entity = "sensor.battery_soc"; name = "Battery (40kWh)"
-                            min = 0; max = 100; severity = @{ green = 50; yellow = 20; red = 0 }
-                        },
-                        @{
-                            type = "grid"; columns = 2; square = $false
-                            cards = @(
-                                @{ type = "custom:mushroom-entity-card"; entity = "sensor.solar_total_generation"; name = "Solar"; icon = "mdi:solar-panel"; icon_color = "amber" },
-                                @{ type = "custom:mushroom-entity-card"; entity = "sensor.solar_total_load"; name = "Load"; icon = "mdi:flash"; icon_color = "blue" }
-                            )
-                        }
-                    )
-                },
-                # Security
-                @{
-                    type = "vertical-stack"
-                    cards = @(
-                        @{
-                            type = "custom:mushroom-template-card"; primary = "Security"
-                            secondary = "Doors open: {{ states('sensor.doors_open_count') }}"
-                            icon = "mdi:shield-home"
-                            icon_color = "{{ 'red' if states('sensor.doors_open_count') | int > 0 else 'green' }}"
-                            tap_action = @{ action = "navigate"; navigation_path = "/security-dashboard" }
-                        },
-                        @{ type = "custom:mushroom-entity-card"; entity = "switch.sonoff_10011481af"; name = "Main Gate"; icon = "mdi:gate" },
-                        @{ type = "custom:mushroom-entity-card"; entity = "switch.sonoff_100114809c"; name = "Visitor Gate"; icon = "mdi:gate" }
-                    )
-                },
-                # Climate
-                @{
-                    type = "vertical-stack"
-                    cards = @(
-                        @{
-                            type = "custom:mushroom-template-card"; primary = "Climate"
-                            secondary = "{{ states('sensor.sonoff_a48003e78d_temperature') }}C | {{ states('sensor.sonoff_a48003e78d_humidity') }}%"
-                            icon = "mdi:thermometer"; icon_color = "teal"
-                            tap_action = @{ action = "navigate"; navigation_path = "/water-climate-dashboard" }
-                        },
-                        @{ type = "custom:mushroom-entity-card"; entity = "switch.sonoff_1001f8b113"; name = "Main Geyser"; icon = "mdi:water-boiler" },
-                        @{ type = "custom:mushroom-entity-card"; entity = "switch.sonoff_100179fb1b"; name = "Flat Geyser"; icon = "mdi:water-boiler" }
-                    )
-                },
-                # Lighting
-                @{
-                    type = "vertical-stack"
-                    cards = @(
-                        @{
-                            type = "custom:mushroom-template-card"; primary = "Lighting"
-                            secondary = "{{ states('sensor.lights_on_count') }} lights on"
-                            icon = "mdi:lightbulb-group"; icon_color = "yellow"
-                            tap_action = @{ action = "navigate"; navigation_path = "/lighting-dashboard" }
-                        },
-                        @{
-                            type = "grid"; columns = 2; square = $false
-                            cards = @(
-                                @{ type = "custom:mushroom-entity-card"; entity = "switch.sonoff_1000feb8de_1"; name = "Lounge"; icon = "mdi:lamp"; tap_action = @{ action = "toggle" } },
-                                @{ type = "custom:mushroom-entity-card"; entity = "switch.sonoff_1000feaf53_2"; name = "Kitchen"; icon = "mdi:ceiling-light"; tap_action = @{ action = "toggle" } },
-                                @{ type = "custom:mushroom-entity-card"; entity = "switch.sonoff_1000febc4d_1"; name = "Bedroom"; icon = "mdi:lamp"; tap_action = @{ action = "toggle" } },
-                                @{ type = "custom:mushroom-entity-card"; entity = "switch.sonoff_1000f4023f_3"; name = "Yard"; icon = "mdi:outdoor-lamp"; tap_action = @{ action = "toggle" } }
-                            )
-                        }
-                    )
-                },
-                # Water
-                @{
-                    type = "vertical-stack"
-                    cards = @(
-                        @{
-                            type = "custom:mushroom-template-card"; primary = "Water"
-                            secondary = "Irrigation & Pumps"
-                            icon = "mdi:water-pump"; icon_color = "blue"
-                            tap_action = @{ action = "navigate"; navigation_path = "/water-climate-dashboard" }
-                        },
-                        @{ type = "custom:mushroom-entity-card"; entity = "switch.sonoff_10011058e1"; name = "Borehole"; icon = "mdi:water-pump" },
-                        @{ type = "custom:mushroom-entity-card"; entity = "switch.sonoff_1001f8b132"; name = "Pool Pump"; icon = "mdi:pool" }
-                    )
-                },
-                # Media
-                @{
-                    type = "vertical-stack"
-                    cards = @(
-                        @{
-                            type = "custom:mushroom-template-card"; primary = "Media"
-                            secondary = "TV & Speakers"; icon = "mdi:speaker-multiple"; icon_color = "deep-purple"
-                            tap_action = @{ action = "navigate"; navigation_path = "/media-dashboard" }
-                        },
-                        @{
-                            type = "custom:mushroom-media-player-card"; entity = "media_player.samsung_tv"; name = "Samsung TV"
-                            use_media_info = $true; show_volume_level = $false; collapsible_controls = $true
-                        }
-                    )
-                }
-            )
-        }
-    )
-}
-
-$r = Invoke-WS "lovelace/config/save" @{ config = $overviewConfig }
-if ($r.success) { Write-Success "Overview saved" } else { Write-Host "  FAIL: $($r.error.message)" -ForegroundColor Red }
-
-# ============================================================
 # Energy Dashboard - single SOC gauge, note on Inv2 SOC
+# NOTE: This script is Energy-only. Overview is managed by
+#       04a + additive scripts (05a, 05c, 08b, 16a).
 # ============================================================
 
 Write-Info "Saving Energy dashboard..."

@@ -254,6 +254,41 @@ $farmView = @{
                 }
             )
         }
+        # Recent Farm Detections section
+        @{
+            type  = "vertical-stack"
+            cards = @(
+                @{
+                    type       = "custom:mushroom-template-card"
+                    primary    = "Recent Detections"
+                    icon       = "mdi:history"
+                    icon_color = "purple"
+                    secondary  = "{{ states('sensor.farm_last_detections') }} buffered"
+                }
+                @{
+                    type    = "markdown"
+                    content = @"
+{% set s = 'sensor.farm_last_detections' %}
+{% set total = states(s) | int(0) %}
+{% if total > 0 %}
+{% for n in [1,2,3,4,5,6] %}
+{% set cam = 'FarmCam' ~ n %}
+{% set cnt = state_attr(s, cam ~ '_count') | int(0) %}
+{% if cnt > 0 %}
+**Farm Camera {{ n }}** — {{ state_attr(s, cam ~ '_last_summary') }}
+_{{ as_timestamp(state_attr(s, cam ~ '_last')) | timestamp_custom('%H:%M %d %b') }}_
+{% set img = state_attr(s, cam ~ '_image') %}
+{% if img %}<a href="{{ img }}?t={{ now().timestamp() | int }}" target="_blank"><img src="{{ img }}?t={{ now().timestamp() | int }}" style="width:100%;max-width:480px;border-radius:8px"></a>{% endif %}
+---
+{% endif %}
+{% endfor %}
+{% else %}
+*No farm detections recorded yet*
+{% endif %}
+"@
+                }
+            )
+        }
     )
 }
 

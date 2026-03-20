@@ -17,6 +17,7 @@ Sensors published:
 import os
 import sys
 import time
+import json
 import logging
 import threading
 from datetime import datetime, date
@@ -212,6 +213,42 @@ def publish_metrics(status="running"):
         publish_image_sensors()
     except Exception:
         logger.exception("Error publishing image sensors")
+
+    # Publish plate OCR stats
+    try:
+        if os.path.exists(config.PLATE_OCR_STATS_PATH):
+            with open(config.PLATE_OCR_STATS_PATH, "r") as f:
+                ocr_stats = json.load(f)
+            today = date.today().strftime("%Y-%m-%d")
+            if ocr_stats.get("date") == today:
+                push_sensor("sensor.street_cam_plate_ocr_stats", ocr_stats.get("gemini_calls_today", 0), {
+                    "friendly_name": "Street Cam Plate OCR Stats",
+                    "icon": "mdi:card-text-outline",
+                    "gemini_calls_today": ocr_stats.get("gemini_calls_today", 0),
+                    "tesseract_calls_today": ocr_stats.get("tesseract_calls_today", 0),
+                    "plates_detected_today": ocr_stats.get("plates_detected_today", 0),
+                    "known_plates_today": ocr_stats.get("known_plates_today", 0),
+                })
+            else:
+                push_sensor("sensor.street_cam_plate_ocr_stats", 0, {
+                    "friendly_name": "Street Cam Plate OCR Stats",
+                    "icon": "mdi:card-text-outline",
+                    "gemini_calls_today": 0,
+                    "tesseract_calls_today": 0,
+                    "plates_detected_today": 0,
+                    "known_plates_today": 0,
+                })
+        else:
+            push_sensor("sensor.street_cam_plate_ocr_stats", 0, {
+                "friendly_name": "Street Cam Plate OCR Stats",
+                "icon": "mdi:card-text-outline",
+                "gemini_calls_today": 0,
+                "tesseract_calls_today": 0,
+                "plates_detected_today": 0,
+                "known_plates_today": 0,
+            })
+    except Exception:
+        logger.exception("Error publishing plate OCR stats")
 
     logger.info(
         "Published: total=%d, people=%d, vehicles=%d, last=%s",

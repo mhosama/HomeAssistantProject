@@ -2,7 +2,9 @@
   "plates": {
     "KH78WWGP": { "owner": "Mauritz Ford Everest", "speaker_alert": false, "mobile_alert": false },
     "MR80BWGP": { "owner": "Chandre Kia Sorento", "speaker_alert": false, "mobile_alert": false },
-    "JHS001MP": { "owner": "Chandre Parents Nissan Navara", "speaker_alert": false, "mobile_alert": false }
+    "JHS001MP": { "owner": "Chandre Parents Nissan Navara", "speaker_alert": false, "mobile_alert": false },
+    "JY43FYGP": { "owner": "Parents Volvo", "speaker_alert": true, "mobile_alert": true },
+    "DC39SHGP": { "owner": "Parents Merc", "speaker_alert": true, "mobile_alert": true }
   },
   "unknown_night_alert": {
     "enabled": true,

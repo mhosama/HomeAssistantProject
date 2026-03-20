@@ -52,6 +52,7 @@ Home Assistant installation for a house in Randpark, South Africa. Deployed on a
 | `HA-RecreateSensors` | `deploy/11-Recreate-Sensors.ps1` | On server startup (2 min delay) |
 | `HA-CameraHealthCheck` | `deploy/12-Camera-HealthCheck.ps1` | Every 30 minutes |
 | `HA-CameraObjectDetection` | `CameraObjectDetection/supervisor.py` | On server startup |
+| `HA-RefreshTTTProjection` | `deploy/05d-Refresh-TTT-Projection.ps1` | Every 10 minutes |
 
 ## Project Structure
 
@@ -74,6 +75,8 @@ HomeAssistantProject/
 │   ├── 05-Setup-Automations.ps1    # Automations (Morning Greeting, Gate Alert)
 │   ├── 05a-Add-TimeToTwenty.ps1    # Battery TTT sensor
 │   ├── 05b-Add-Geyser-Alerts.ps1   # Geyser & borehole TTS alerts
+│   ├── 05c-Upgrade-TTT-Solar.ps1   # Solar-aware TTT sensor + apexcharts + dashboard
+│   ├── 05d-Refresh-TTT-Projection.ps1 # Battery projection runner (every 10 min)
 │   ├── 06-Setup-News.ps1           # Sky News Daily setup
 │   ├── 06a-Refresh-News.ps1        # Refreshes Sky News URL (scheduled task)
 │   ├── 07a-AA-Sensors.ps1          # Android Auto template sensors
@@ -93,6 +96,8 @@ HomeAssistantProject/
 │   ├── 13-Update-CameraIPs.ps1     # One-off: delete stale Tapo entries + recreate with new IPs
 │   ├── 14-Setup-InfoDashboard.ps1  # Info dashboard with vision analysis stats
 │   ├── 15-Setup-ObjectDetection.ps1 # Street camera object detection deployment
+│   ├── 16-Setup-Life360.ps1        # Life360 location tracking (HACS + config flow + automations)
+│   ├── 16a-Add-Life360Dashboard.ps1 # Presence dashboard (map + member cards + history)
 │   ├── Manage-VM.ps1               # VM management utility (needs admin)
 │   └── README.md                   # Deployment instructions
 ├── CameraObjectDetection/   # YOLOv5 street camera detection pipeline
@@ -135,9 +140,11 @@ HomeAssistantProject/
 
 1. **Read `TODO.md` first** - check what's outstanding and what's new
 2. **Before any server deployment**, read `memory/remote-deploy-patterns.md` for proven patterns (quick deploy, Samba access, health checks, common gotchas)
-3. **Update `TODO.md`** when completing tasks or discovering new ones
-3. Always check `docs/DECISIONS.md` before proposing architectural changes
-4. Update `docs/TROUBLESHOOTING.md` when solving non-trivial issues
-5. When adding integrations, update `docs/INTEGRATIONS.md`, `docs/EQUIPMENT.md`, and `TODO.md`
-6. Prefer HA's built-in integrations over custom/HACS when quality is comparable
-7. Test YAML changes mentally before suggesting them (valid syntax, correct indentation)
+3. **After ANY deployment** (server deploy, running a setup script against HA, or modifying live config), **always run `deploy/17-Integrity-Check.ps1`** to verify nothing broke. This is mandatory, not optional.
+4. **When adding new entities to HA** (sensors, automations, cameras, dashboards, scheduled tasks), **always update the expected arrays in `deploy/17-Integrity-Check.ps1`** so the integrity check covers them. New entities that aren't in the check don't exist as far as validation is concerned.
+5. **Update `TODO.md`** when completing tasks or discovering new ones
+6. Always check `docs/DECISIONS.md` before proposing architectural changes
+7. Update `docs/TROUBLESHOOTING.md` when solving non-trivial issues
+8. When adding integrations, update `docs/INTEGRATIONS.md`, `docs/EQUIPMENT.md`, and `TODO.md`
+9. Prefer HA's built-in integrations over custom/HACS when quality is comparable
+10. Test YAML changes mentally before suggesting them (valid syntax, correct indentation)

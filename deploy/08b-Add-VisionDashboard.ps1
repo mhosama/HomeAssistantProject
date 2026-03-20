@@ -170,16 +170,35 @@ $visionView = @{
                     secondary = "AI chicken count from coop camera"
                 }
                 @{
-                    type      = "gauge"
-                    entity    = "sensor.chicken_count"
-                    name      = "Chickens in Coop"
-                    min       = 0
-                    max       = 15
-                    severity  = @{
-                        green  = 3
-                        yellow = 1
-                        red    = 0
-                    }
+                    type    = "grid"
+                    columns = 2
+                    square  = $false
+                    cards   = @(
+                        @{
+                            type      = "gauge"
+                            entity    = "sensor.chicken_count"
+                            name      = "Chickens in Coop"
+                            min       = 0
+                            max       = 15
+                            severity  = @{
+                                green  = 3
+                                yellow = 1
+                                red    = 0
+                            }
+                        }
+                        @{
+                            type      = "gauge"
+                            entity    = "sensor.egg_count"
+                            name      = "Eggs Visible"
+                            min       = 0
+                            max       = 12
+                            severity  = @{
+                                green  = 1
+                                yellow = 0
+                                red    = 0
+                            }
+                        }
+                    )
                 }
             )
         }
@@ -277,6 +296,41 @@ $visionView = @{
                 }
             )
         }
+        # Recent Detections section
+        @{
+            type  = "vertical-stack"
+            cards = @(
+                @{
+                    type       = "custom:mushroom-template-card"
+                    primary    = "Recent Detections"
+                    icon       = "mdi:history"
+                    icon_color = "purple"
+                    secondary  = "{{ states('sensor.vision_last_detections') }} buffered"
+                }
+                @{
+                    type    = "markdown"
+                    content = @"
+{% set s = 'sensor.vision_last_detections' %}
+{% set total = states(s) | int(0) %}
+{% if total > 0 %}
+{% set cams = ['Chickens','Backyard','BackDoor','VeggieGarden','DiningRoom','Kitchen','MainGate','VisitorGate','Lawn','Pool','Garage','Lounge'] %}
+{% for cam in cams %}
+{% set cnt = state_attr(s, cam ~ '_count') | int(0) %}
+{% if cnt > 0 %}
+**{{ cam }}** — {{ state_attr(s, cam ~ '_last_summary') }}
+_{{ as_timestamp(state_attr(s, cam ~ '_last')) | timestamp_custom('%H:%M %d %b') }}_
+{% set img = state_attr(s, cam ~ '_image') %}
+{% if img %}<a href="{{ img }}?t={{ now().timestamp() | int }}" target="_blank"><img src="{{ img }}?t={{ now().timestamp() | int }}" style="width:100%;max-width:480px;border-radius:8px"></a>{% endif %}
+---
+{% endif %}
+{% endfor %}
+{% else %}
+*No detections recorded yet*
+{% endif %}
+"@
+                }
+            )
+        }
     )
 }
 
@@ -339,7 +393,7 @@ $visionOverviewCard = @{
             primary    = "Vision AI"
             icon       = "mdi:eye"
             icon_color = "purple"
-            secondary  = "{{ states('sensor.main_gate_status') | title }} / {{ states('sensor.visitor_gate_status') | title }} gates | {{ states('sensor.chicken_count') }} chickens"
+            secondary  = "{{ states('sensor.main_gate_status') | title }} / {{ states('sensor.visitor_gate_status') | title }} gates | {{ states('sensor.chicken_count') }} chickens | {{ states('sensor.egg_count') }} eggs | {{ states('sensor.vision_last_detections') }} detections"
         }
         @{
             type    = "grid"

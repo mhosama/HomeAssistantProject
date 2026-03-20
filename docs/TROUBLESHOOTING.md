@@ -333,5 +333,7 @@ Track issues encountered during this specific deployment:
 | 14 | 2026-03-13 | WinRM session exhaustion — rapid Invoke-Command calls fail | Bundle into single call; use Get-Content + Invoke-Expression pattern for large scripts | Server deployment |
 | 15 | 2026-03-13 | pip.exe inaccessible via PS Remoting | Use `python -m pip` instead of calling pip.exe directly | Object detection deploy |
 | 16 | 2026-03-13 | Windows Store python.exe fails as SYSTEM | Use real Python at `C:\Python311\python.exe`, not WindowsApps stub | Object detection deploy |
+| 17 | 2026-03-20 | Good Night automation never fires — `failed_conditions` in trace | `last_triggered` is `None` (not missing) so `| default(0)` doesn't catch it. `as_timestamp(None)` crashes. Fix: `{% set last = state_attr(...) %}{{ last is none or ... }}` | Automations |
+| 18 | 2026-03-20 | Stale plate OCR alerts at night for daytime cars | ProcessCropFiles backlog: 8K+ files queued, Gemini OCR ~3s/car couldn't keep up. Fix: skip plate OCR for files >120s old | Object detection |
 
 > Update this log as issues are discovered and resolved.

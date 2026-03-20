@@ -84,6 +84,7 @@ Write-Log "HA accessible after $waited seconds"
 $sensors = @(
     # Home Vision Analysis sensors (from 08-Setup-VisionAnalysis.ps1)
     @{ entity_id = "sensor.chicken_count";          state = "0";       attributes = @{ friendly_name = "Chicken Count";          icon = "mdi:chicken";         unit_of_measurement = "chickens" } }
+    @{ entity_id = "sensor.egg_count";              state = "0";       attributes = @{ friendly_name = "Egg Count";              icon = "mdi:egg";             unit_of_measurement = "eggs" } }
     @{ entity_id = "sensor.breakfast_food";          state = "unknown"; attributes = @{ friendly_name = "Breakfast Food";         icon = "mdi:food-croissant"  } }
     @{ entity_id = "sensor.lunch_food";              state = "unknown"; attributes = @{ friendly_name = "Lunch Food";             icon = "mdi:food"            } }
     @{ entity_id = "sensor.dinner_food";             state = "unknown"; attributes = @{ friendly_name = "Dinner Food";            icon = "mdi:food-turkey"     } }
@@ -91,7 +92,8 @@ $sensors = @(
     @{ entity_id = "sensor.main_gate_car_count";     state = "0";       attributes = @{ friendly_name = "Main Gate Car Count";    icon = "mdi:car";            unit_of_measurement = "cars" } }
     @{ entity_id = "sensor.visitor_gate_status";     state = "unknown"; attributes = @{ friendly_name = "Visitor Gate Status";    icon = "mdi:gate"            } }
     @{ entity_id = "sensor.visitor_gate_car_count";  state = "0";       attributes = @{ friendly_name = "Visitor Gate Car Count"; icon = "mdi:car";            unit_of_measurement = "cars" } }
-    @{ entity_id = "sensor.vision_analysis_stats";   state = "0";       attributes = @{ friendly_name = "Vision Analysis Stats";  icon = "mdi:chart-bar"       } }
+    @{ entity_id = "sensor.vision_analysis_stats";   state = "0";       attributes = @{ friendly_name = "Vision Analysis Stats";  icon = "mdi:chart-bar"; motion_events = "[]" } }
+    @{ entity_id = "sensor.vision_last_detections"; state = "0";       attributes = @{ friendly_name = "Vision Last Detections"; icon = "mdi:eye"             } }
     @{ entity_id = "sensor.pool_adult_count";       state = "0";       attributes = @{ friendly_name = "Pool Adult Count";      icon = "mdi:account";        unit_of_measurement = "people" } }
     @{ entity_id = "sensor.pool_child_count";       state = "0";       attributes = @{ friendly_name = "Pool Child Count";      icon = "mdi:account-child";  unit_of_measurement = "people" } }
     @{ entity_id = "sensor.pool_cover_status";      state = "unknown"; attributes = @{ friendly_name = "Pool Cover Status";     icon = "mdi:pool"            } }
@@ -109,6 +111,7 @@ $sensors = @(
     @{ entity_id = "sensor.farm_rain_status";  state = "none";    attributes = @{ friendly_name = "Farm Rain Status"; icon = "mdi:weather-rainy"; intensity = "none" } }
     @{ entity_id = "sensor.farm_animal_summary"; state = "none detected"; attributes = @{ friendly_name = "Farm Animals"; icon = "mdi:cow"; total_count = 0 } }
     @{ entity_id = "sensor.farm_human_vehicle_summary"; state = "clear"; attributes = @{ friendly_name = "Farm Humans/Vehicles"; icon = "mdi:account-alert"; human_count = 0; vehicle_count = 0 } }
+    @{ entity_id = "sensor.farm_last_detections"; state = "0"; attributes = @{ friendly_name = "Farm Last Detections"; icon = "mdi:eye" } }
 
     # Farm battery sensors
     @{ entity_id = "sensor.farm_cam_1_battery"; state = "unknown"; attributes = @{ friendly_name = "Farm Camera 1 Battery"; icon = "mdi:battery"; device_class = "battery"; unit_of_measurement = "%" } }
@@ -116,7 +119,10 @@ $sensors = @(
     @{ entity_id = "sensor.farm_cam_5_battery"; state = "unknown"; attributes = @{ friendly_name = "Farm Camera 5 Battery"; icon = "mdi:battery"; device_class = "battery"; unit_of_measurement = "%" } }
 
     # Weather briefing sensor
-    @{ entity_id = "sensor.weather_briefing"; state = "unknown"; attributes = @{ friendly_name = "Weather Briefing"; icon = "mdi:weather-partly-cloudy" } }
+    @{ entity_id = "sensor.weather_briefing"; state = "unknown"; attributes = @{ friendly_name = "Weather Briefing"; icon = "mdi:weather-partly-cloudy"; hourly_cloud_cover = @() } }
+
+    # Battery projection sensor (from 05d-Refresh-TTT-Projection.ps1)
+    @{ entity_id = "sensor.battery_projection"; state = "unknown"; attributes = @{ friendly_name = "Battery Projection"; icon = "mdi:chart-timeline-variant"; hours = @(); projected_soc = @(); projected_solar = @(); projected_load = @(); ttt_hour = $null } }
 
     # Street camera object detection sensors (from 15-Setup-ObjectDetection.ps1)
     @{ entity_id = "sensor.street_cam_detections_today"; state = "0";       attributes = @{ friendly_name = "Street Cam Detections Today"; icon = "mdi:cctv";           unit_of_measurement = "detections"; by_type = @{}; hourly = @{} } }
@@ -127,6 +133,7 @@ $sensors = @(
     @{ entity_id = "sensor.street_cam_status";           state = "offline"; attributes = @{ friendly_name = "Street Cam Detection Status"; icon = "mdi:alert-circle"   } }
     @{ entity_id = "sensor.street_cam_last_plate";           state = "none"; attributes = @{ friendly_name = "Street Cam Last Plate";           icon = "mdi:car-info" } }
     @{ entity_id = "sensor.street_cam_known_plates_today"; state = "0"; attributes = @{ friendly_name = "Street Cam Known Plates Today"; icon = "mdi:car-multiple"; unit_of_measurement = "sightings"; plates = @() } }
+    @{ entity_id = "sensor.street_cam_plate_ocr_stats"; state = "0"; attributes = @{ friendly_name = "Street Cam Plate OCR Stats"; icon = "mdi:card-text-outline"; gemini_calls_today = 0; tesseract_calls_today = 0; plates_detected_today = 0; known_plates_today = 0 } }
     @{ entity_id = "sensor.street_cam_person_1";  state = "empty"; attributes = @{ friendly_name = "Street Cam Person 1";  icon = "mdi:walk" } }
     @{ entity_id = "sensor.street_cam_person_2";  state = "empty"; attributes = @{ friendly_name = "Street Cam Person 2";  icon = "mdi:walk" } }
     @{ entity_id = "sensor.street_cam_person_3";  state = "empty"; attributes = @{ friendly_name = "Street Cam Person 3";  icon = "mdi:walk" } }
