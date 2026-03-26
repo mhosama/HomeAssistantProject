@@ -8,12 +8,14 @@
 
     Categories checked:
     1. HA Connectivity
-    2. Sensors (49)
+    2. Sensors (51)
     3. Cameras (20)
-    4. Automations (14)
-    5. Dashboards (9)
-    6. Scheduled Tasks (8) — server only, skipped on dev PC
-    7. Host Processes (5) — server only, verifies detection pipeline + log freshness + sensor recency
+    4. Automations (20)
+    5. Device Trackers (5)
+    5b. Input Booleans (2)
+    6. Dashboards (9)
+    7. Scheduled Tasks (10) — server only, skipped on dev PC
+    8. Host Processes (5) — server only, verifies detection pipeline + log freshness + sensor recency
 
 .EXAMPLE
     .\17-Integrity-Check.ps1
@@ -204,7 +206,13 @@ $expectedSensors = @(
     "sensor.street_cam_vehicle_1", "sensor.street_cam_vehicle_2", "sensor.street_cam_vehicle_3",
     "sensor.street_cam_vehicle_4", "sensor.street_cam_vehicle_5",
     "sensor.street_cam_loitering",
-    "sensor.street_cam_unconfirmed_loitering_today", "sensor.street_cam_confirmed_loitering_today", "sensor.street_cam_false_loitering_today"
+    "sensor.street_cam_unconfirmed_loitering_today", "sensor.street_cam_confirmed_loitering_today", "sensor.street_cam_false_loitering_today",
+
+    # Gemini token usage (1)
+    "sensor.gemini_token_usage",
+
+    # Energy schedule (2)
+    "sensor.energy_schedule", "sensor.energy_schedule_log"
 )
 
 $expectedCameras = @(
@@ -239,7 +247,12 @@ $expectedAutomations = @(
     "automation.family_member_arrived",
     "automation.family_member_departed",
     "automation.farm_fire_smoke_detected",
-    "automation.farm_intruder_detected"
+    "automation.farm_intruder_detected",
+    "automation.borehole_pump_schedule",
+    "automation.irrigation_veggie_garden",
+    # Google Find My (2)
+    "automation.findmy_device_battery_low",
+    "automation.findmy_zone_alert"
 )
 
 $expectedDashboards = @(
@@ -251,7 +264,8 @@ $expectedDashboards = @(
     "media-dashboard",
     "info-dashboard",
     "street-stats",
-    "family-presence"
+    "family-presence",
+    "energy-schedule"
 )
 
 $expectedTrackers = @(
@@ -259,7 +273,14 @@ $expectedTrackers = @(
     "device_tracker.life360_chandre_kloppers",
     "device_tracker.life360_mauritz_kloppers_2",
     "device_tracker.life360_lizette_kloppers",
-    "device_tracker.life360_melandi_gossman"
+    "device_tracker.life360_melandi_gossman",
+    # Google Find My (6)
+    "device_tracker.galaxy_s24_ultra",
+    "device_tracker.kia_sorento",
+    "device_tracker.honey_trap",
+    "device_tracker.ford_everest",
+    "device_tracker.elle_tag",
+    "device_tracker.lana_tag"
 )
 
 $expectedTasks = @(
@@ -270,7 +291,9 @@ $expectedTasks = @(
     "HA-RefreshTTTProjection",
     "HA-CameraHealthCheck",
     "HA-RecreateSensors",
-    "HA-CameraObjectDetection"
+    "HA-CameraObjectDetection",
+    "HA-RefreshEnergySchedule",
+    "HA-RunEnergySchedule"
 )
 
 # ============================================================
@@ -331,6 +354,28 @@ Test-Entities -Category "Automations" -Expected $expectedAutomations -StateMap $
 $trackerTotal = $expectedTrackers.Count
 Write-Header "Device Trackers ($trackerTotal expected)"
 Test-Entities -Category "Device Trackers" -Expected $expectedTrackers -StateMap $stateMap
+
+# ============================================================
+# Check 5b: Input Booleans
+# ============================================================
+
+$expectedInputBooleans = @(
+    "input_boolean.loitering_detection",
+    "input_boolean.energy_schedule_active",
+    "input_boolean.borehole_pump_schedule"
+)
+
+# Add 45 energy schedule override booleans (3 devices x 15 hours)
+$overrideDevKeys = @("main_geyser", "flat_geyser", "pool_pump")
+foreach ($dev in $overrideDevKeys) {
+    for ($h = 6; $h -le 20; $h++) {
+        $expectedInputBooleans += "input_boolean.override_${dev}_$($h.ToString('D2'))"
+    }
+}
+
+$ibTotal = $expectedInputBooleans.Count
+Write-Header "Input Booleans ($ibTotal expected)"
+Test-Entities -Category "Input Booleans" -Expected $expectedInputBooleans -StateMap $stateMap
 
 # ============================================================
 # Check 6: Dashboards (via WebSocket)

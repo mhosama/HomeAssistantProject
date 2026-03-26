@@ -85,6 +85,20 @@ def verify_loitering(first_crop, last_crop):
             return None
 
         data = resp.json()
+
+        # Track Gemini token usage
+        usage = data.get("usageMetadata", {})
+        try:
+            config.update_gemini_token_stats(
+                "loitering_verify",
+                calls=1,
+                prompt_tokens=usage.get("promptTokenCount", 0),
+                completion_tokens=usage.get("candidatesTokenCount", 0),
+                total_tokens=usage.get("totalTokenCount", 0),
+            )
+        except Exception:
+            pass
+
         text = data["candidates"][0]["content"]["parts"][0]["text"]
         result = json.loads(text)
 

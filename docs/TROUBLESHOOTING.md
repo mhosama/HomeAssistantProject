@@ -255,6 +255,29 @@ See `deploy/10a-Run-EzvizVision.ps1` for the full implementation.
 
 ---
 
+## TTS Issues
+
+### TTS chime/ring but no speech on Google Cast speakers
+
+**Symptom**: Speaker makes the Google Cast chime/ring sound (acknowledging the TTS command) but no speech audio plays. The automation trace shows success.
+
+**Cause**: HA's `internal_url` is set to `http://homeassistant.local:8123`. Google Cast speakers often cannot resolve `.local` mDNS hostnames. The speaker receives the TTS command (chime) but fails to fetch the audio file from the URL HA provides.
+
+**Diagnosis**: Check `media_content_id` on the media player entity after a TTS call — if it contains `homeassistant.local`, the speaker can't reach it.
+
+**Solution**: Set the internal URL to the HA VM's IP address:
+- **Via UI**: Settings → System → Network → Home Assistant URL → Internal URL → `http://192.168.0.239:8123`
+- **Via WebSocket API**:
+  ```json
+  {"type": "config/core/update", "internal_url": "http://192.168.0.239:8123"}
+  ```
+
+**Verification**: After updating, trigger a TTS call and check the `media_content_id` attribute on the speaker entity — it should now contain the IP address (e.g., `http://192.168.0.239:8123/api/tts_proxy/...mp3`).
+
+**Note**: The `external_url` may also need updating if accessing HA remotely — but for local Cast speakers, only `internal_url` matters.
+
+---
+
 ## General Tips
 
 ### Before making big changes
@@ -335,5 +358,6 @@ Track issues encountered during this specific deployment:
 | 16 | 2026-03-13 | Windows Store python.exe fails as SYSTEM | Use real Python at `C:\Python311\python.exe`, not WindowsApps stub | Object detection deploy |
 | 17 | 2026-03-20 | Good Night automation never fires — `failed_conditions` in trace | `last_triggered` is `None` (not missing) so `| default(0)` doesn't catch it. `as_timestamp(None)` crashes. Fix: `{% set last = state_attr(...) %}{{ last is none or ... }}` | Automations |
 | 18 | 2026-03-20 | Stale plate OCR alerts at night for daytime cars | ProcessCropFiles backlog: 8K+ files queued, Gemini OCR ~3s/car couldn't keep up. Fix: skip plate OCR for files >120s old | Object detection |
+| 19 | 2026-03-26 | TTS chime but no speech on Cast speakers | `internal_url` was `homeassistant.local` — Cast speakers can't resolve `.local` mDNS. Changed to `http://192.168.0.239:8123` via WS API `config/core/update` | TTS / Google Cast |
 
 > Update this log as issues are discovered and resolved.

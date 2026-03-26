@@ -163,12 +163,13 @@ def _save_plate_ocr_stats(stats):
 # SA plate validation
 # ============================================================
 
-_SA_PLATE_RE = re.compile(r"^[A-Z]{1,3}[0-9]{1,3}[A-Z]{2,3}$")
+_SA_PLATE_RE = re.compile(r"^[A-Z]{1,3}[0-9]{1,3}[A-Z]{2,4}$")
 
 
 def _validate_sa_plate(text):
-    """Check if text matches SA license plate format (6-9 chars)."""
-    if not text or len(text) < 6 or len(text) > 9:
+    """Check if text matches SA license plate format (6-10 chars).
+    Format: 1-3 letters + 1-3 digits + 2-4 letters (registration + province code)."""
+    if not text or len(text) < 6 or len(text) > 10:
         return False
     return bool(_SA_PLATE_RE.match(text))
 
@@ -234,6 +235,20 @@ def _gemini_read_plate(img_bgr):
             return ("", 0)
 
         data = resp.json()
+
+        # Track Gemini token usage
+        usage = data.get("usageMetadata", {})
+        try:
+            config.update_gemini_token_stats(
+                "plate_ocr",
+                calls=1,
+                prompt_tokens=usage.get("promptTokenCount", 0),
+                completion_tokens=usage.get("candidatesTokenCount", 0),
+                total_tokens=usage.get("totalTokenCount", 0),
+            )
+        except Exception:
+            pass
+
         text = data["candidates"][0]["content"]["parts"][0]["text"]
         result = json.loads(text)
 
@@ -282,7 +297,7 @@ def _best_substring_distance(registry_plate, detected_text):
     return best
 
 
-def check_plate_registry(plate_text, crop_path=None):
+def check_plate_registry(plate_text, crop_path=None, plate_img=None):
     """Look up a detected plate against the registry and fire alerts."""
     if not plate_text or len(plate_text) < 5:
         return
@@ -337,23 +352,30 @@ def check_plate_registry(plate_text, crop_path=None):
     is_known = match_info is not None
     owner = match_info.get("owner", "Unknown") if match_info else "Unknown"
 
-    # Copy crop image to HA www for known plates
+    # Copy plate image to HA www for known plates
+    # Prefer plate_img (contour crop, BGR) over crop_path (full car from YOLOv5)
     plate_image_url = ""
-    if is_known and crop_path and os.path.isfile(crop_path):
+    if is_known:
         samba_dir = config.HA_WWW_SAMBA
         if os.path.isdir(samba_dir):
             dest = os.path.join(samba_dir, "street_known_plate.jpg")
             try:
-                img = cv2.imread(crop_path)
-                if img is not None:
-                    img_fixed = img[:, :, ::-1]  # fix R↔B channel swap from YOLOv5
-                    cv2.imwrite(dest, img_fixed)
-                else:
-                    shutil.copy2(crop_path, dest)
-                plate_image_url = "/local/street_known_plate.jpg"
-                logger.info("Known plate image copied to %s", dest)
+                if plate_img is not None:
+                    # plate_img is already BGR from cv2 pipeline — write directly
+                    cv2.imwrite(dest, plate_img)
+                    plate_image_url = "/local/street_known_plate.jpg"
+                    logger.info("Known plate contour image written to %s", dest)
+                elif crop_path and os.path.isfile(crop_path):
+                    img = cv2.imread(crop_path)
+                    if img is not None:
+                        img_fixed = img[:, :, ::-1]  # fix R↔B channel swap from YOLOv5
+                        cv2.imwrite(dest, img_fixed)
+                    else:
+                        shutil.copy2(crop_path, dest)
+                    plate_image_url = "/local/street_known_plate.jpg"
+                    logger.info("Known plate image (full car fallback) copied to %s", dest)
             except Exception:
-                logger.exception("Failed to copy plate crop to HA www")
+                logger.exception("Failed to copy plate image to HA www")
 
     # Persist last known plate image in state so it survives unknown plate detections
     if is_known and plate_image_url:
@@ -524,16 +546,68 @@ def _ocr_on_image(img_bgr):
     return score2, clean2, gray
 
 
+def _extract_plate_contours(original_image):
+    """Find plate-like rectangular contours in a car crop image.
+
+    Returns list of (contour_img_rotated, x, y, w, h) tuples for each
+    plate-like 4-sided contour found, sorted by area (largest first).
+    """
+    gray_image = cv2.cvtColor(original_image, cv2.COLOR_BGR2GRAY)
+    gray_image = cv2.bilateralFilter(gray_image, 11, 17, 17)
+    edged_image = cv2.Canny(gray_image, 30, 200)
+    contours, _ = cv2.findContours(edged_image.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:30]
+
+    results = []
+    resX, resY = gray_image.shape[1], gray_image.shape[0]
+
+    for c in contours:
+        contour_perimeter = cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, 0.018 * contour_perimeter, True)
+
+        if len(approx) == 4:
+            x, y, w, h = cv2.boundingRect(c)
+            rect = cv2.minAreaRect(c)
+            (cx, cy), (rw, rh), angle = rect
+
+            target = np.full((resY, resX, 3), 255, dtype=np.uint8)
+            mask = np.zeros((resY, resX, 1), dtype=np.uint8)
+            box_points = np.intp(cv2.boxPoints(rect))
+            cv2.drawContours(mask, [box_points], -1, (255), -1)
+
+            inv = 255 - original_image
+            target = cv2.bitwise_and(target, inv, mask=mask)
+            target = 255 - target
+            new_img = target[y : y + h, x : x + w]
+
+            # Aspect-ratio-aware rotation: ensure plate is landscape
+            rotation_angle = angle
+            if rw < rh:
+                rotation_angle += 90
+
+            img_rotated = rotate_image(new_img, rotation_angle)
+
+            # Enforce landscape: if still taller than wide, rotate 90°
+            rh2, rw2 = img_rotated.shape[:2]
+            if rh2 > rw2:
+                img_rotated = rotate_image(img_rotated, 90)
+
+            results.append(img_rotated)
+
+    return results
+
+
 def save_license_plate(path_to_file, path_to_save):
     """Attempt OCR on a car crop to extract license plate text.
 
-    Two-pass approach:
-    Pass 1: Send full car crop to Gemini (skips contour detection entirely)
-    Pass 2: Contour-based extraction + Tesseract fallback (only if Gemini fails)
+    Two-pass approach (Tesseract-first to minimize Gemini costs):
+    Pass 1: Contour-based extraction + Tesseract (free, local)
+            If a valid SA plate is found, accept it immediately.
+    Pass 2: Gemini fallback on the best plate contour crop (small image)
+            Only called when Tesseract found contours but couldn't read them.
+            Subject to daily call cap (PLATE_GEMINI_DAILY_CAP).
 
-    Backlog protection: files older than 120s skip Gemini (too expensive for
-    thousands of backlogged files) and skip alerts (stale detections shouldn't
-    trigger notifications).
+    Backlog protection: files older than 120s are skipped entirely.
     """
     try:
         original_image = cv2.imread(path_to_file)
@@ -548,98 +622,87 @@ def save_license_plate(path_to_file, path_to_save):
             return
 
         stats = _load_plate_ocr_stats()
-
-        # === Pass 1: Gemini on the full car crop ===
-        plate_text, confidence = _gemini_read_plate(original_image)
-        if confidence >= config.PLATE_GEMINI_CONFIDENCE and _validate_sa_plate(plate_text):
-            logger.info("Gemini plate accepted: %s (conf=%.2f)", plate_text, confidence)
-            out_path = f"{path_to_save}_{plate_text}_gemini.jpg"
-            gray = cv2.cvtColor(original_image, cv2.COLOR_BGR2GRAY)
-            cv2.imwrite(out_path, gray)
-            stats["plates_detected_today"] = stats.get("plates_detected_today", 0) + 1
-            _save_plate_ocr_stats(stats)
-            try:
-                check_plate_registry(plate_text, crop_path=path_to_file)
-            except Exception:
-                logger.exception("Plate registry check error for %s", plate_text)
-            return
-
-        if plate_text:
-            logger.debug("Gemini plate rejected: '%s' (conf=%.2f, valid=%s)",
-                         plate_text, confidence, _validate_sa_plate(plate_text))
-
-        # === Pass 2: Contour-based extraction + Tesseract fallback ===
         stats["tesseract_calls_today"] = stats.get("tesseract_calls_today", 0) + 1
         _save_plate_ocr_stats(stats)
 
-        gray_image = cv2.cvtColor(original_image, cv2.COLOR_BGR2GRAY)
-        gray_image = cv2.bilateralFilter(gray_image, 11, 17, 17)
-        edged_image = cv2.Canny(gray_image, 30, 200)
-        contours, _ = cv2.findContours(edged_image.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)[:30]
+        # === Pass 1: Contour-based extraction + Tesseract (free) ===
+        plate_contours = _extract_plate_contours(original_image)
 
+        best_gemini_candidate = None  # best contour crop for Gemini fallback
+        best_gemini_candidate_area = 0
         idx = 0
-        for c in contours:
-            contour_perimeter = cv2.arcLength(c, True)
-            approx = cv2.approxPolyDP(c, 0.018 * contour_perimeter, True)
 
-            if len(approx) == 4:
-                x, y, w, h = cv2.boundingRect(c)
-                rect = cv2.minAreaRect(c)
-                (cx, cy), (rw, rh), angle = rect
+        for img_rotated in plate_contours:
+            # Dual-orientation OCR: try normal and 180° flipped, pick best
+            img_flipped = cv2.rotate(img_rotated, cv2.ROTATE_180)
 
-                resX, resY = gray_image.shape[1], gray_image.shape[0]
-                target = np.full((resY, resX, 3), 255, dtype=np.uint8)
-                mask = np.zeros((resY, resX, 1), dtype=np.uint8)
-                box_points = np.intp(cv2.boxPoints(rect))
-                cv2.drawContours(mask, [box_points], -1, (255), -1)
+            score_normal, text_normal, gray_normal = _ocr_on_image(img_rotated)
+            score_flipped, text_flipped, gray_flipped = _ocr_on_image(img_flipped)
 
-                inv = 255 - original_image
-                target = cv2.bitwise_and(target, inv, mask=mask)
-                target = 255 - target
-                new_img = target[y : y + h, x : x + w]
+            if score_flipped > score_normal:
+                best_text = text_flipped
+                best_gray = gray_flipped
+                best_plate_img = img_flipped
+            else:
+                best_text = text_normal
+                best_gray = gray_normal
+                best_plate_img = img_rotated
 
-                # Aspect-ratio-aware rotation: ensure plate is landscape
-                rotation_angle = angle
-                if rw < rh:
-                    rotation_angle += 90
+            idx += 1
 
-                img_rotated = rotate_image(new_img, rotation_angle)
+            # Track largest contour with >4 chars as Gemini fallback candidate
+            area = img_rotated.shape[0] * img_rotated.shape[1]
+            if len(best_text) > 2 and area > best_gemini_candidate_area:
+                best_gemini_candidate = img_rotated
+                best_gemini_candidate_area = area
 
-                # Enforce landscape: if still taller than wide, rotate 90°
-                rh2, rw2 = img_rotated.shape[:2]
-                if rh2 > rw2:
-                    img_rotated = rotate_image(img_rotated, 90)
-
-                # Dual-orientation OCR: try normal and 180° flipped, pick best
-                img_flipped = cv2.rotate(img_rotated, cv2.ROTATE_180)
-
-                score_normal, text_normal, gray_normal = _ocr_on_image(img_rotated)
-                score_flipped, text_flipped, gray_flipped = _ocr_on_image(img_flipped)
-
-                if score_flipped > score_normal:
-                    best_text = text_flipped
-                    best_gray = gray_flipped
+            if len(best_text) > 4:
+                out_path = f"{path_to_save}_{best_text}_{idx}.jpg"
+                cv2.imwrite(out_path, best_gray)
+                logger.info("Tesseract plate OCR: %s -> %s", best_text, out_path)
+                # If Tesseract got a valid SA plate, accept it — no need for Gemini
+                if _validate_sa_plate(best_text):
+                    stats = _load_plate_ocr_stats()
+                    stats["plates_detected_today"] = stats.get("plates_detected_today", 0) + 1
+                    _save_plate_ocr_stats(stats)
+                    try:
+                        check_plate_registry(best_text, crop_path=path_to_file, plate_img=best_plate_img)
+                    except Exception:
+                        logger.exception("Plate registry check error for %s", best_text)
+                    return  # Tesseract succeeded — done
                 else:
-                    best_text = text_normal
-                    best_gray = gray_normal
+                    logger.debug("Tesseract plate rejected (invalid SA format): %s", best_text)
 
-                idx += 1
-                if len(best_text) > 4:
-                    out_path = f"{path_to_save}_{best_text}_{idx}.jpg"
-                    cv2.imwrite(out_path, best_gray)
-                    logger.info("Tesseract plate OCR: %s -> %s", best_text, out_path)
-                    # Only check registry for plates passing SA format validation
-                    if _validate_sa_plate(best_text):
-                        stats = _load_plate_ocr_stats()
-                        stats["plates_detected_today"] = stats.get("plates_detected_today", 0) + 1
-                        _save_plate_ocr_stats(stats)
-                        try:
-                            check_plate_registry(best_text, crop_path=path_to_file)
-                        except Exception:
-                            logger.exception("Plate registry check error for %s", best_text)
-                    else:
-                        logger.debug("Tesseract plate rejected (invalid SA format): %s", best_text)
+        # === Pass 2: Gemini fallback on the plate contour crop (small image) ===
+        # Only called when: contours were found but Tesseract couldn't read a valid plate
+        if best_gemini_candidate is None:
+            # No plate-like contours found at all — nothing to send to Gemini
+            return
+
+        # Check daily Gemini cap
+        stats = _load_plate_ocr_stats()
+        if stats.get("gemini_calls_today", 0) >= config.PLATE_GEMINI_DAILY_CAP:
+            logger.debug("Gemini plate daily cap reached (%d), skipping",
+                         config.PLATE_GEMINI_DAILY_CAP)
+            return
+
+        # Send the small plate contour crop (not the full car image) to Gemini
+        plate_text, confidence = _gemini_read_plate(best_gemini_candidate)
+        if confidence >= config.PLATE_GEMINI_CONFIDENCE and _validate_sa_plate(plate_text):
+            logger.info("Gemini plate accepted (contour fallback): %s (conf=%.2f)", plate_text, confidence)
+            out_path = f"{path_to_save}_{plate_text}_gemini.jpg"
+            gray = cv2.cvtColor(best_gemini_candidate, cv2.COLOR_BGR2GRAY)
+            cv2.imwrite(out_path, gray)
+            stats = _load_plate_ocr_stats()
+            stats["plates_detected_today"] = stats.get("plates_detected_today", 0) + 1
+            _save_plate_ocr_stats(stats)
+            try:
+                check_plate_registry(plate_text, crop_path=path_to_file, plate_img=best_gemini_candidate)
+            except Exception:
+                logger.exception("Plate registry check error for %s", plate_text)
+        elif plate_text:
+            logger.debug("Gemini plate rejected (contour fallback): '%s' (conf=%.2f, valid=%s)",
+                         plate_text, confidence, _validate_sa_plate(plate_text))
 
     except Exception:
         logger.exception("OCR error on %s", path_to_file)

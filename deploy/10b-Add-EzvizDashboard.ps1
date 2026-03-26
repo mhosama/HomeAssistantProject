@@ -182,6 +182,46 @@ $farmView = @{
                 }
             )
         }
+        # AI Verification section (Flash first pass + Pro second pass)
+        @{
+            type  = "vertical-stack"
+            cards = @(
+                @{
+                    type       = "custom:mushroom-template-card"
+                    primary    = "AI Verification"
+                    icon       = "mdi:shield-check"
+                    icon_color = "teal"
+                    secondary  = "Flash detection + Pro verification"
+                }
+                @{
+                    type    = "markdown"
+                    content = @"
+{% set ns = namespace(has_detection=false) %}
+{% for n in [1, 3, 5] %}
+{% set s = 'sensor.farm_cam_' ~ n ~ '_status' %}
+{% set st = states(s) %}
+{% if st not in ['unknown', 'unavailable', 'clear', 'error'] %}
+{% set ns.has_detection = true %}
+### Farm Camera {{ n }}
+**Flash (quick):** {{ st }}
+{% set vs = state_attr(s, 'verified_status') %}
+{% if vs and vs != '' %}
+{% if vs == 'confirmed' %}**Pro (verified):** Confirmed{% elif vs == 'false_positive' %}**Pro (verified):** False positive{% else %}**Pro (verified):** Unverified{% endif %}
+{% set vd = state_attr(s, 'verification_detail') %}
+{% if vd and vd != '' %}
+> {{ vd }}
+{% endif %}
+{% else %}
+*Awaiting verification...*
+{% endif %}
+---
+{% endif %}
+{% endfor %}
+{% if not ns.has_detection %}*All cameras clear — no detections to verify*{% endif %}
+"@
+                }
+            )
+        }
         # Per-camera snapshot + status section
         @{
             type  = "vertical-stack"
@@ -193,23 +233,23 @@ $farmView = @{
                     icon_color = "blue"
                     secondary  = "EZVIZ farm cameras - on-demand capture every 5 min"
                 }
-                # Camera 1 - on-demand capture image + AI status
+                # Camera 1 - on-demand capture image + AI status + verification
                 @{
                     type    = "markdown"
                     title   = "Farm Camera 1"
-                    content = "{% set pic = state_attr('sensor.farm_cam_1_status', 'entity_picture') %}{% if pic %}<img src=`"{{ pic }}`" style=`"width:100%;border-radius:8px`">{% else %}*No capture available*{% endif %}`n**Status:** {{ states('sensor.farm_cam_1_status') }} | **Battery:** {{ states('sensor.farm_cam_1_battery') }}%"
+                    content = "<img src=`"/local/farm_cam1_latest.jpg?t={{ now().timestamp() | int }}`" style=`"width:100%;border-radius:8px`" onerror=`"this.style.display='none'`">`n**Status:** {{ states('sensor.farm_cam_1_status') }}{% set vs = state_attr('sensor.farm_cam_1_status', 'verified_status') %}{% if vs and vs != '' %} | **Verified:** {{ vs }}{% endif %} | **Battery:** {{ states('sensor.farm_cam_1_battery') }}%"
                 }
-                # Camera 3 - on-demand capture image + AI status
+                # Camera 3 - on-demand capture image + AI status + verification
                 @{
                     type    = "markdown"
                     title   = "Farm Camera 3"
-                    content = "{% set pic = state_attr('sensor.farm_cam_3_status', 'entity_picture') %}{% if pic %}<img src=`"{{ pic }}`" style=`"width:100%;border-radius:8px`">{% else %}*No capture available*{% endif %}`n**Status:** {{ states('sensor.farm_cam_3_status') }} | **Battery:** {{ states('sensor.farm_cam_3_battery') }}%"
+                    content = "<img src=`"/local/farm_cam3_latest.jpg?t={{ now().timestamp() | int }}`" style=`"width:100%;border-radius:8px`" onerror=`"this.style.display='none'`">`n**Status:** {{ states('sensor.farm_cam_3_status') }}{% set vs = state_attr('sensor.farm_cam_3_status', 'verified_status') %}{% if vs and vs != '' %} | **Verified:** {{ vs }}{% endif %} | **Battery:** {{ states('sensor.farm_cam_3_battery') }}%"
                 }
-                # Camera 5 - on-demand capture image + AI status
+                # Camera 5 - on-demand capture image + AI status + verification
                 @{
                     type    = "markdown"
                     title   = "Farm Camera 5"
-                    content = "{% set pic = state_attr('sensor.farm_cam_5_status', 'entity_picture') %}{% if pic %}<img src=`"{{ pic }}`" style=`"width:100%;border-radius:8px`">{% else %}*No capture available*{% endif %}`n**Status:** {{ states('sensor.farm_cam_5_status') }} | **Battery:** {{ states('sensor.farm_cam_5_battery') }}%"
+                    content = "<img src=`"/local/farm_cam5_latest.jpg?t={{ now().timestamp() | int }}`" style=`"width:100%;border-radius:8px`" onerror=`"this.style.display='none'`">`n**Status:** {{ states('sensor.farm_cam_5_status') }}{% set vs = state_attr('sensor.farm_cam_5_status', 'verified_status') %}{% if vs and vs != '' %} | **Verified:** {{ vs }}{% endif %} | **Battery:** {{ states('sensor.farm_cam_5_battery') }}%"
                 }
             )
         }

@@ -101,12 +101,12 @@ $sensors = @(
     @{ entity_id = "sensor.right_garage_door";      state = "unknown"; attributes = @{ friendly_name = "Right Garage Door";     icon = "mdi:garage"          } }
 
     # Farm Vision Analysis sensors (from 10-Setup-Ezviz.ps1)
-    @{ entity_id = "sensor.farm_cam_1_status"; state = "unknown"; attributes = @{ friendly_name = "Farm Camera 1"; icon = "mdi:cctv"; source = "ezviz" } }
-    @{ entity_id = "sensor.farm_cam_2_status"; state = "unknown"; attributes = @{ friendly_name = "Farm Camera 2"; icon = "mdi:cctv"; source = "ezviz" } }
-    @{ entity_id = "sensor.farm_cam_3_status"; state = "unknown"; attributes = @{ friendly_name = "Farm Camera 3"; icon = "mdi:cctv"; source = "ezviz" } }
-    @{ entity_id = "sensor.farm_cam_4_status"; state = "unknown"; attributes = @{ friendly_name = "Farm Camera 4"; icon = "mdi:cctv"; source = "ezviz" } }
-    @{ entity_id = "sensor.farm_cam_5_status"; state = "unknown"; attributes = @{ friendly_name = "Farm Camera 5"; icon = "mdi:cctv"; source = "ezviz" } }
-    @{ entity_id = "sensor.farm_cam_6_status"; state = "unknown"; attributes = @{ friendly_name = "Farm Camera 6"; icon = "mdi:cctv"; source = "ezviz" } }
+    @{ entity_id = "sensor.farm_cam_1_status"; state = "unknown"; attributes = @{ friendly_name = "Farm Camera 1"; icon = "mdi:cctv"; source = "ezviz"; verified_status = ""; verification_detail = ""; verification_model = ""; verification_time = "" } }
+    @{ entity_id = "sensor.farm_cam_2_status"; state = "unknown"; attributes = @{ friendly_name = "Farm Camera 2"; icon = "mdi:cctv"; source = "ezviz"; verified_status = ""; verification_detail = ""; verification_model = ""; verification_time = "" } }
+    @{ entity_id = "sensor.farm_cam_3_status"; state = "unknown"; attributes = @{ friendly_name = "Farm Camera 3"; icon = "mdi:cctv"; source = "ezviz"; verified_status = ""; verification_detail = ""; verification_model = ""; verification_time = "" } }
+    @{ entity_id = "sensor.farm_cam_4_status"; state = "unknown"; attributes = @{ friendly_name = "Farm Camera 4"; icon = "mdi:cctv"; source = "ezviz"; verified_status = ""; verification_detail = ""; verification_model = ""; verification_time = "" } }
+    @{ entity_id = "sensor.farm_cam_5_status"; state = "unknown"; attributes = @{ friendly_name = "Farm Camera 5"; icon = "mdi:cctv"; source = "ezviz"; verified_status = ""; verification_detail = ""; verification_model = ""; verification_time = "" } }
+    @{ entity_id = "sensor.farm_cam_6_status"; state = "unknown"; attributes = @{ friendly_name = "Farm Camera 6"; icon = "mdi:cctv"; source = "ezviz"; verified_status = ""; verification_detail = ""; verification_model = ""; verification_time = "" } }
     @{ entity_id = "sensor.farm_fire_smoke";   state = "none";    attributes = @{ friendly_name = "Farm Fire/Smoke"; icon = "mdi:fire-alert"; cameras_detecting = "" } }
     @{ entity_id = "sensor.farm_rain_status";  state = "none";    attributes = @{ friendly_name = "Farm Rain Status"; icon = "mdi:weather-rainy"; intensity = "none" } }
     @{ entity_id = "sensor.farm_animal_summary"; state = "none detected"; attributes = @{ friendly_name = "Farm Animals"; icon = "mdi:cow"; total_count = 0 } }
@@ -150,6 +150,13 @@ $sensors = @(
     @{ entity_id = "sensor.street_cam_unconfirmed_loitering_today"; state = "0"; attributes = @{ friendly_name = "Street Cam Unconfirmed Loitering Today"; icon = "mdi:account-question"; unit_of_measurement = "detections" } }
     @{ entity_id = "sensor.street_cam_confirmed_loitering_today";   state = "0"; attributes = @{ friendly_name = "Street Cam Confirmed Loitering Today";   icon = "mdi:account-check";    unit_of_measurement = "detections" } }
     @{ entity_id = "sensor.street_cam_false_loitering_today";       state = "0"; attributes = @{ friendly_name = "Street Cam False Loitering Today";       icon = "mdi:account-cancel";   unit_of_measurement = "detections" } }
+
+    # Gemini token usage tracking
+    @{ entity_id = "sensor.gemini_token_usage"; state = "0"; attributes = @{ friendly_name = "Gemini Token Usage"; icon = "mdi:brain"; unit_of_measurement = "tokens"; total_calls = 0; prompt_tokens = 0; completion_tokens = 0; estimated_cost_usd = 0; daily_history = "[]" } }
+
+    # Energy schedule sensors (from 18-Setup-EnergySchedule.ps1)
+    @{ entity_id = "sensor.energy_schedule"; state = "pending"; attributes = @{ friendly_name = "Energy Schedule"; icon = "mdi:lightning-bolt-circle"; hourly_plan = @(); device_summary = ""; total_solar_kwh = 0; tts_summary = ""; irrigation_disabled = $false; schedule_date = ""; confidence = ""; last_updated = "" } }
+    @{ entity_id = "sensor.energy_schedule_log"; state = "0"; attributes = @{ friendly_name = "Energy Schedule Log"; icon = "mdi:format-list-bulleted"; events = @(); last_updated = "" } }
 )
 
 # ============================================================

@@ -122,7 +122,107 @@ Return JSON only: {"plate": "ABC123GP", "confidence": 0.95}
 If no plate is readable, return: {"plate": "", "confidence": 0}"""
 
 PLATE_GEMINI_CONFIDENCE = 0.4  # minimum confidence to accept Gemini result
+PLATE_GEMINI_DAILY_CAP = 100  # max Gemini plate OCR calls per day (safety net)
 PLATE_OCR_STATS_PATH = os.path.join(SCRIPT_DIR, ".plate_ocr_stats.json")
+
+# ============================================================
+# Gemini Token Usage Tracking
+# ============================================================
+# Hardcoded to match PS scripts' $scriptDir on server — both callers must use the same file
+GEMINI_STATS_PATH = r"C:\Work\HomeAssistantProject\deploy\.gemini_token_stats.json"
+
+# Gemini 2.5 Flash pricing (USD per 1M tokens)
+GEMINI_INPUT_PRICE_PER_M = 0.30
+GEMINI_OUTPUT_PRICE_PER_M = 2.50
+
+
+def update_gemini_token_stats(source, calls=1, prompt_tokens=0, completion_tokens=0, total_tokens=0):
+    """Update shared Gemini token stats file with cross-process file locking (Windows).
+
+    Args:
+        source: Caller identifier (e.g. "plate_ocr", "loitering_verify")
+        calls: Number of API calls made
+        prompt_tokens: Input tokens from usageMetadata.promptTokenCount
+        completion_tokens: Output tokens from usageMetadata.candidatesTokenCount
+        total_tokens: Total tokens from usageMetadata.totalTokenCount
+    """
+    import msvcrt
+    from datetime import datetime as _dt
+
+    stats_path = GEMINI_STATS_PATH
+    today = _dt.now().strftime("%Y-%m-%d")
+
+    try:
+        os.makedirs(os.path.dirname(stats_path), exist_ok=True)
+
+        # Open or create the file
+        if not os.path.exists(stats_path):
+            with open(stats_path, "w") as f:
+                import json as _json
+                _json.dump({"daily_date": today, "sources": {}, "daily_history": []}, f)
+
+        import json as _json
+
+        with open(stats_path, "r+") as f:
+            # Lock first byte (blocking, up to ~1s) — acts as advisory lock
+            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                content = f.read()
+                stats = _json.loads(content) if content.strip() else {"daily_date": today, "sources": {}, "daily_history": []}
+
+                # Daily rollover — archive yesterday's totals
+                if stats.get("daily_date") != today:
+                    old_date = stats.get("daily_date", "")
+                    if old_date and stats.get("sources"):
+                        # Sum all sources for yesterday's total (per-source pricing)
+                        # Gemini 2.5 Pro sources use higher pricing ($1.25/$10.00 per M tokens)
+                        _PRO_SOURCES = {"ezviz_vision_pro"}
+                        _PRO_INPUT_PM, _PRO_OUTPUT_PM = 1.25, 10.00
+                        day_calls = sum(s.get("calls", 0) for s in stats["sources"].values())
+                        day_prompt = sum(s.get("prompt_tokens", 0) for s in stats["sources"].values())
+                        day_completion = sum(s.get("completion_tokens", 0) for s in stats["sources"].values())
+                        day_total = sum(s.get("total_tokens", 0) for s in stats["sources"].values())
+                        day_cost = 0
+                        for sname, sdata in stats["sources"].items():
+                            sp, sc = sdata.get("prompt_tokens", 0), sdata.get("completion_tokens", 0)
+                            if sname in _PRO_SOURCES:
+                                day_cost += (sp * _PRO_INPUT_PM + sc * _PRO_OUTPUT_PM) / 1_000_000
+                            else:
+                                day_cost += (sp * GEMINI_INPUT_PRICE_PER_M + sc * GEMINI_OUTPUT_PRICE_PER_M) / 1_000_000
+
+                        history = stats.get("daily_history", [])
+                        history.append({
+                            "date": old_date,
+                            "calls": day_calls,
+                            "prompt_tokens": day_prompt,
+                            "completion_tokens": day_completion,
+                            "total_tokens": day_total,
+                            "estimated_cost_usd": round(day_cost, 4),
+                        })
+                        # Keep last 30 days
+                        stats["daily_history"] = history[-30:]
+
+                    stats["daily_date"] = today
+                    stats["sources"] = {}
+
+                # Update source counters
+                sources = stats.setdefault("sources", {})
+                src = sources.setdefault(source, {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+                src["calls"] += calls
+                src["prompt_tokens"] += prompt_tokens
+                src["completion_tokens"] += completion_tokens
+                src["total_tokens"] += total_tokens
+
+                # Write back
+                f.seek(0)
+                f.truncate()
+                _json.dump(stats, f, indent=2)
+            finally:
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+    except Exception:
+        pass  # Non-critical — don't break callers
+
 
 # ============================================================
 # Logging

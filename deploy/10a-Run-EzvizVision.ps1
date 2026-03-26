@@ -45,7 +45,8 @@ try {
 $haBase      = "http://$($Config.HA_IP):8123"
 $haToken     = $Config.HA_TOKEN
 $geminiKey   = $Config.GeminiApiKey
-$geminiModel = $Config.GeminiModel
+$geminiModel    = $Config.GeminiModel
+$geminiProModel = "gemini-2.5-pro"
 
 $logDir    = Join-Path $scriptDir "logs"
 $logFile   = Join-Path $logDir "ezviz_analysis.log"
@@ -71,6 +72,173 @@ if ((Test-Path $logFile) -and ((Get-Item $logFile).Length -gt 5MB)) {
 }
 
 Write-Log "=== EZVIZ vision analysis run starting ==="
+
+# ============================================================
+# Gemini Token Stats (shared state file, cross-process locking)
+# ============================================================
+
+$geminiStatsFile = Join-Path $scriptDir ".gemini_token_stats.json"
+
+function Update-GeminiTokenStats {
+    param(
+        [string]$Source,
+        [int]$Calls = 0,
+        [int]$PromptTokens = 0,
+        [int]$CompletionTokens = 0,
+        [int]$TotalTokens = 0
+    )
+    if ($Calls -eq 0 -and $TotalTokens -eq 0) { return }
+
+    $mtx = $null
+    try {
+        $mtx = New-Object System.Threading.Mutex($false, "Global\HA-GeminiTokenStats")
+        $null = $mtx.WaitOne(5000)
+
+        $today = (Get-Date).ToString("yyyy-MM-dd")
+
+        if (Test-Path $geminiStatsFile) {
+            $stats = Get-Content $geminiStatsFile -Raw | ConvertFrom-Json
+        } else {
+            $stats = [PSCustomObject]@{ daily_date = $today; sources = [PSCustomObject]@{}; daily_history = @() }
+        }
+
+        # Daily rollover
+        if ($stats.daily_date -ne $today) {
+            $oldDate = $stats.daily_date
+            if ($oldDate -and $stats.sources.PSObject.Properties.Count -gt 0) {
+                $dayCalls = 0; $dayPrompt = 0; $dayCompletion = 0; $dayTotal = 0; $dayCost = 0
+                # Gemini 2.5 Flash: $0.30/$2.50, Pro: $1.25/$10.00 per M tokens
+                foreach ($p in $stats.sources.PSObject.Properties) {
+                    $dayCalls += [int]$p.Value.calls
+                    $dayPrompt += [int]$p.Value.prompt_tokens
+                    $dayCompletion += [int]$p.Value.completion_tokens
+                    $dayTotal += [int]$p.Value.total_tokens
+                    if ($p.Name -eq "ezviz_vision_pro") {
+                        $dayCost += ([int]$p.Value.prompt_tokens * 1.25 + [int]$p.Value.completion_tokens * 10.00) / 1000000
+                    } else {
+                        $dayCost += ([int]$p.Value.prompt_tokens * 0.30 + [int]$p.Value.completion_tokens * 2.50) / 1000000
+                    }
+                }
+                $dayCost = [math]::Round($dayCost, 4)
+                $entry = [PSCustomObject]@{
+                    date = $oldDate; calls = $dayCalls; prompt_tokens = $dayPrompt
+                    completion_tokens = $dayCompletion; total_tokens = $dayTotal
+                    estimated_cost_usd = $dayCost
+                }
+                $history = @($stats.daily_history) + @($entry)
+                if ($history.Count -gt 30) { $history = $history | Select-Object -Last 30 }
+                $stats.daily_history = $history
+            }
+            $stats.daily_date = $today
+            $stats.sources = [PSCustomObject]@{}
+        }
+
+        # Update source
+        if (-not $stats.sources.PSObject.Properties[$Source]) {
+            $stats.sources | Add-Member -NotePropertyName $Source -NotePropertyValue ([PSCustomObject]@{
+                calls = 0; prompt_tokens = 0; completion_tokens = 0; total_tokens = 0
+            }) -Force
+        }
+        $src = $stats.sources.$Source
+        $src.calls = [int]$src.calls + $Calls
+        $src.prompt_tokens = [int]$src.prompt_tokens + $PromptTokens
+        $src.completion_tokens = [int]$src.completion_tokens + $CompletionTokens
+        $src.total_tokens = [int]$src.total_tokens + $TotalTokens
+
+        $stats | ConvertTo-Json -Depth 10 | Set-Content $geminiStatsFile -Encoding UTF8
+    } catch {
+        # Non-critical
+    } finally {
+        if ($mtx) { try { $mtx.ReleaseMutex() } catch {} ; $mtx.Dispose() }
+    }
+}
+
+# ============================================================
+# Gemini Pro verification (second pass for security detections)
+# ============================================================
+
+function Invoke-GeminiProVerification {
+    param(
+        [string]$CameraName,
+        [byte[]]$ImageBytes,
+        [PSCustomObject]$FirstPassData
+    )
+
+    $result = @{
+        Confirmed        = $false
+        Description      = ""
+        Confidence       = $null
+        PromptTokens     = 0
+        CompletionTokens = 0
+        TotalTokens      = 0
+        Error            = $null
+    }
+
+    $base64Image = [Convert]::ToBase64String($ImageBytes)
+
+    # Build summary of what Flash detected
+    $detections = @()
+    if ([int]$FirstPassData.humans.count -gt 0) { $detections += "$([int]$FirstPassData.humans.count) human(s)" }
+    if ([int]$FirstPassData.vehicles.count -gt 0) { $detections += "$([int]$FirstPassData.vehicles.count) vehicle(s) ($($FirstPassData.vehicles.types))" }
+    if ([int]$FirstPassData.animals.count -gt 0) { $detections += "$([int]$FirstPassData.animals.count) animal(s) ($($FirstPassData.animals.types))" }
+    if ($FirstPassData.fire_smoke.detected -eq $true) { $detections += "fire/smoke (severity: $($FirstPassData.fire_smoke.severity))" }
+    $detectionSummary = $detections -join "; "
+
+    $proPrompt = @"
+A fast AI model analyzed this farm security camera image and reported these detections: $detectionSummary
+
+Please carefully verify this image. For each claimed detection, confirm or reject it. Be very descriptive about what you see. Provide your response as JSON only:
+
+{"confirmed": true, "description": "2-3 sentence detailed description of what you actually see in the image", "detections": {"humans": {"confirmed": false, "count": 0, "confidence_pct": 0, "detail": ""}, "vehicles": {"confirmed": false, "count": 0, "confidence_pct": 0, "detail": ""}, "animals": {"confirmed": false, "count": 0, "confidence_pct": 0, "detail": ""}, "fire_smoke": {"confirmed": false, "confidence_pct": 0, "detail": ""}}}
+
+Rules:
+- "confirmed" at top level = true if ANY detection is genuinely present (not a false positive)
+- Per-detection "confirmed" = true only if that specific detection type is real
+- confidence_pct: 0-100 how confident you are the detection is real
+- detail: descriptive text (e.g. "2 brown cattle grazing near the eastern fence line", "adult male walking along the dirt road carrying a bag")
+- description: overall scene description including lighting, weather conditions, and what you observe
+- Common false positives on farm cameras: tree stumps or poles as people, dust clouds as smoke, shadows as vehicles, rocks as animals
+- This is a farm in South Africa - wildlife and livestock are expected but still noteworthy
+- If night vision (grayscale/infrared), note reduced confidence accordingly
+"@
+
+    $geminiUri = "https://generativelanguage.googleapis.com/v1beta/models/${geminiProModel}:generateContent?key=$geminiKey"
+
+    $geminiBody = @{
+        contents = @(@{
+            parts = @(
+                @{ inline_data = @{ mime_type = "image/jpeg"; data = $base64Image } }
+                @{ text = $proPrompt }
+            )
+        })
+        generationConfig = @{
+            responseMimeType = "application/json"
+            temperature      = 0.2
+        }
+    } | ConvertTo-Json -Depth 10
+
+    try {
+        $geminiResp = Invoke-RestMethod -Uri $geminiUri -Method POST `
+            -Body ([System.Text.Encoding]::UTF8.GetBytes($geminiBody)) `
+            -ContentType "application/json; charset=utf-8" -TimeoutSec 120
+
+        if ($geminiResp.usageMetadata) {
+            $result.PromptTokens     = [int]$geminiResp.usageMetadata.promptTokenCount
+            $result.CompletionTokens = [int]$geminiResp.usageMetadata.candidatesTokenCount
+            $result.TotalTokens      = [int]$geminiResp.usageMetadata.totalTokenCount
+        }
+
+        $responseText = $geminiResp.candidates[0].content.parts[0].text
+        $parsed = $responseText | ConvertFrom-Json
+        $result.Confirmed   = [bool]$parsed.confirmed
+        $result.Description = [string]$parsed.description
+        $result.Confidence  = $parsed.detections
+    } catch {
+        $result.Error = "Pro verification failed: $($_.Exception.Message)"
+    }
+
+    return $result
+}
 
 # ============================================================
 # Time context
@@ -359,12 +527,15 @@ $workerScript = {
     )
 
     $result = @{
-        Camera     = $CameraName
-        Success    = $false
-        Data       = $null
-        PicUrl     = $null
-        ImageBytes = $null
-        Error      = $null
+        Camera           = $CameraName
+        Success          = $false
+        Data             = $null
+        PicUrl           = $null
+        ImageBytes       = $null
+        Error            = $null
+        PromptTokens     = 0
+        CompletionTokens = 0
+        TotalTokens      = 0
     }
 
     try {
@@ -447,7 +618,14 @@ $workerScript = {
             return $result
         }
 
-        # 5. Extract JSON from response
+        # 5. Extract token usage from response
+        if ($geminiResp.usageMetadata) {
+            $result.PromptTokens     = [int]$geminiResp.usageMetadata.promptTokenCount
+            $result.CompletionTokens = [int]$geminiResp.usageMetadata.candidatesTokenCount
+            $result.TotalTokens      = [int]$geminiResp.usageMetadata.totalTokenCount
+        }
+
+        # 6. Extract JSON from response
         $responseText = $geminiResp.candidates[0].content.parts[0].text
         $parsed = $responseText | ConvertFrom-Json
         $result.Data = $parsed
@@ -521,6 +699,24 @@ $pool.Close()
 $pool.Dispose()
 
 # ============================================================
+# Aggregate Gemini token usage from worker results
+# ============================================================
+
+$tickPromptTokens = 0; $tickCompletionTokens = 0; $tickTotalTokens = 0; $tickCalls = 0
+foreach ($r in $results) {
+    if ($r.TotalTokens -and [int]$r.TotalTokens -gt 0) {
+        $tickPromptTokens     += [int]$r.PromptTokens
+        $tickCompletionTokens += [int]$r.CompletionTokens
+        $tickTotalTokens      += [int]$r.TotalTokens
+        $tickCalls++
+    }
+}
+if ($tickCalls -gt 0) {
+    Write-Log "Gemini tokens this run: $tickCalls calls, $tickPromptTokens prompt, $tickCompletionTokens completion, $tickTotalTokens total"
+    Update-GeminiTokenStats -Source "ezviz_vision" -Calls $tickCalls -PromptTokens $tickPromptTokens -CompletionTokens $tickCompletionTokens -TotalTokens $tickTotalTokens
+}
+
+# ============================================================
 # Process results
 # ============================================================
 
@@ -540,15 +736,19 @@ function Send-TTS {
 }
 
 function Send-PhoneAlert {
-    param([string]$Message, [string]$Title = "Farm Vision Alert")
+    param([string]$Message, [string]$Title = "Farm Vision Alert", [string]$ImageUrl = $null)
     if (-not $notifyEntity) { return }
     $body = @{
         message = $Message
         title   = $Title
-    } | ConvertTo-Json -Depth 5
+    }
+    if ($ImageUrl) {
+        $body.data = @{ image = $ImageUrl }
+    }
+    $jsonBody = $body | ConvertTo-Json -Depth 5
     try {
         $svcName = $notifyEntity -replace "notify\.", ""
-        $null = Invoke-WebRequest -Uri "$haBase/api/services/notify/$svcName" -Method POST -Headers $haHeaders -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -UseBasicParsing -TimeoutSec 15
+        $null = Invoke-WebRequest -Uri "$haBase/api/services/notify/$svcName" -Method POST -Headers $haHeaders -Body ([System.Text.Encoding]::UTF8.GetBytes($jsonBody)) -UseBasicParsing -TimeoutSec 15
         Write-Log "Phone alert sent: $Message"
     } catch {
         Write-Log "Phone alert failed: $($_.Exception.Message)" "ERROR"
@@ -556,13 +756,16 @@ function Send-PhoneAlert {
 }
 
 function Send-Alert {
-    param([string]$AlertKey, [string]$Message)
+    param([string]$AlertKey, [string]$Message, [string]$ImageUrl = $null)
     $cfg = $alertConfig[$AlertKey]
     if ($cfg.TTS) { Send-TTS $Message }
-    if ($cfg.Phone) { Send-PhoneAlert -Message $Message }
+    if ($cfg.Phone) { Send-PhoneAlert -Message $Message -ImageUrl $ImageUrl }
 }
 
-# Aggregate data across all cameras
+# ============================================================
+# First pass: Aggregate data across all cameras (Flash results)
+# ============================================================
+
 $totalHumans   = 0
 $totalVehicles = 0
 $totalAnimals  = 0
@@ -576,19 +779,26 @@ $rainIntensity = "none"
 $humanCameras  = @()
 $vehicleCameras = @()
 
+# Store per-camera data and image URLs for second pass + alerts
+$cameraFirstPass = @{}
+$cameraImageUrls = @{}
+
 foreach ($r in $results) {
     $camName = $r.Camera
     $camIndex = [int]($camName -replace "FarmCam", "") # Extract camera number
 
     if (-not $r.Success) {
         Write-Log "${camName}: FAILED - $($r.Error)" "ERROR"
-        # Update per-camera sensor with error
         Update-HaSensor -EntityId "sensor.farm_cam_${camIndex}_status" -State "error" -Attributes @{
-            friendly_name = "Farm Camera $camIndex"
-            icon          = "mdi:cctv"
-            source        = "ezviz"
-            error         = [string]$r.Error
-            last_updated  = $now.ToString("o")
+            friendly_name       = "Farm Camera $camIndex"
+            icon                = "mdi:cctv"
+            source              = "ezviz"
+            error               = [string]$r.Error
+            verified_status     = ""
+            verification_detail = ""
+            verification_model  = ""
+            verification_time   = ""
+            last_updated        = $now.ToString("o")
         }
         continue
     }
@@ -606,25 +816,38 @@ foreach ($r in $results) {
     $stateText = if ($stateParts.Count -gt 0) { $stateParts -join ", " } else { "clear" }
 
     $sensorAttrs = @{
-        friendly_name  = "Farm Camera $camIndex"
-        icon           = "mdi:cctv"
-        source         = "ezviz"
-        humans         = [int]$data.humans.count
-        vehicles       = [int]$data.vehicles.count
-        vehicle_types  = [string]$data.vehicles.types
-        animals        = [int]$data.animals.count
-        animal_types   = [string]$data.animals.types
-        fire_smoke     = [bool]$data.fire_smoke.detected
-        fire_severity  = [string]$data.fire_smoke.severity
-        fire_distance  = [string]$data.fire_smoke.estimated_distance
-        rain           = [bool]$data.rain.detected
-        rain_intensity = [string]$data.rain.intensity
-        last_updated   = $now.ToString("o")
+        friendly_name       = "Farm Camera $camIndex"
+        icon                = "mdi:cctv"
+        source              = "ezviz"
+        humans              = [int]$data.humans.count
+        vehicles            = [int]$data.vehicles.count
+        vehicle_types       = [string]$data.vehicles.types
+        animals             = [int]$data.animals.count
+        animal_types        = [string]$data.animals.types
+        fire_smoke          = [bool]$data.fire_smoke.detected
+        fire_severity       = [string]$data.fire_smoke.severity
+        fire_distance       = [string]$data.fire_smoke.estimated_distance
+        rain                = [bool]$data.rain.detected
+        rain_intensity      = [string]$data.rain.intensity
+        verified_status     = ""
+        verification_detail = ""
+        verification_model  = ""
+        verification_time   = ""
+        last_updated        = $now.ToString("o")
     }
-    # Add picUrl as entity_picture if available (for dashboard display)
     if ($r.PicUrl) { $sensorAttrs["entity_picture"] = $r.PicUrl }
 
     Update-HaSensor -EntityId "sensor.farm_cam_${camIndex}_status" -State $stateText -Attributes $sensorAttrs
+
+    # Store for second pass
+    $cameraFirstPass[$camName] = @{
+        Data       = $data
+        StateText  = $stateText
+        CamIndex   = $camIndex
+        ImageBytes = $r.ImageBytes
+        Attrs      = $sensorAttrs
+    }
+    $cameraImageUrls[$camName] = "/local/farm_cam${camIndex}_latest.jpg"
 
     # Record detection history (only when something is detected)
     if ($stateText -ne "clear") {
@@ -647,37 +870,7 @@ foreach ($r in $results) {
         $state.detection_history.$histKey = $histArray
     }
 
-    # Aggregate humans
-    if ($data.humans.count -gt 0) {
-        $totalHumans += [int]$data.humans.count
-        $humanCameras += $camName
-    }
-
-    # Aggregate vehicles
-    if ($data.vehicles.count -gt 0) {
-        $totalVehicles += [int]$data.vehicles.count
-        $vehicleCameras += $camName
-    }
-
-    # Aggregate animals
-    if ($data.animals.count -gt 0) {
-        $totalAnimals += [int]$data.animals.count
-        if ($data.animals.types) { $animalTypes += [string]$data.animals.types }
-    }
-
-    # Aggregate fire/smoke (highest severity wins)
-    if ($data.fire_smoke.detected -eq $true) {
-        $fireDetected = $true
-        $fireCameras += $camName
-        $severityOrder = @{ "none" = 0; "low" = 1; "medium" = 2; "high" = 3 }
-        $currentSev = if ($data.fire_smoke.severity) { [string]$data.fire_smoke.severity } else { "low" }
-        if ($severityOrder[$currentSev] -gt $severityOrder[$fireSeverity]) {
-            $fireSeverity = $currentSev
-            $fireDistance = [string]$data.fire_smoke.estimated_distance
-        }
-    }
-
-    # Aggregate rain (highest intensity wins)
+    # Aggregate rain from first pass (rain skips Pro verification)
     if ($data.rain.detected -eq $true) {
         $rainDetected = $true
         $intensityOrder = @{ "none" = 0; "light" = 1; "moderate" = 2; "heavy" = 3 }
@@ -686,6 +879,132 @@ foreach ($r in $results) {
             $rainIntensity = $currentInt
         }
     }
+}
+
+# ============================================================
+# Second pass: Gemini Pro verification (security detections only)
+# Rain skips verification — alerts fire directly from Flash.
+# ============================================================
+
+$proTickCalls = 0; $proTickPrompt = 0; $proTickCompletion = 0; $proTickTotal = 0
+
+# Identify cameras needing security verification (humans, vehicles, animals, fire/smoke)
+$camerasNeedingVerification = @()
+foreach ($camName in $cameraFirstPass.Keys) {
+    $d = $cameraFirstPass[$camName].Data
+    $needsVerify = ([int]$d.humans.count -gt 0) -or ([int]$d.vehicles.count -gt 0) -or
+                   ([int]$d.animals.count -gt 0) -or ($d.fire_smoke.detected -eq $true)
+    if ($needsVerify) {
+        $camerasNeedingVerification += $camName
+    }
+}
+
+if ($camerasNeedingVerification.Count -gt 0) {
+    Write-Log "Second pass: $($camerasNeedingVerification.Count) camera(s) need Pro verification"
+
+    foreach ($camName in $camerasNeedingVerification) {
+        $fp = $cameraFirstPass[$camName]
+        $camIndex = $fp.CamIndex
+
+        if (-not $fp.ImageBytes -or $fp.ImageBytes.Count -eq 0) {
+            Write-Log "${camName}: No image bytes for Pro verification - using first-pass data" "WARN"
+            # Fall back: aggregate from first-pass data
+            $d = $fp.Data
+            if ([int]$d.humans.count -gt 0) { $totalHumans += [int]$d.humans.count; $humanCameras += $camName }
+            if ([int]$d.vehicles.count -gt 0) { $totalVehicles += [int]$d.vehicles.count; $vehicleCameras += $camName }
+            if ([int]$d.animals.count -gt 0) { $totalAnimals += [int]$d.animals.count; if ($d.animals.types) { $animalTypes += [string]$d.animals.types } }
+            if ($d.fire_smoke.detected -eq $true) {
+                $fireDetected = $true; $fireCameras += $camName
+                $severityOrder = @{ "none" = 0; "low" = 1; "medium" = 2; "high" = 3 }
+                $currentSev = if ($d.fire_smoke.severity) { [string]$d.fire_smoke.severity } else { "low" }
+                if ($severityOrder[$currentSev] -gt $severityOrder[$fireSeverity]) { $fireSeverity = $currentSev; $fireDistance = [string]$d.fire_smoke.estimated_distance }
+            }
+            continue
+        }
+
+        Write-Log "${camName}: Running Pro verification..."
+        $proResult = Invoke-GeminiProVerification -CameraName $camName -ImageBytes $fp.ImageBytes -FirstPassData $fp.Data
+
+        # Track Pro tokens
+        if ($proResult.TotalTokens -gt 0) {
+            $proTickCalls++
+            $proTickPrompt     += $proResult.PromptTokens
+            $proTickCompletion += $proResult.CompletionTokens
+            $proTickTotal      += $proResult.TotalTokens
+        }
+
+        if ($proResult.Error) {
+            Write-Log "${camName}: Pro verification error: $($proResult.Error) — falling back to Flash data" "WARN"
+            # Fallback: use first-pass data for aggregation (better to false-alarm than miss)
+            $d = $fp.Data
+            if ([int]$d.humans.count -gt 0) { $totalHumans += [int]$d.humans.count; $humanCameras += $camName }
+            if ([int]$d.vehicles.count -gt 0) { $totalVehicles += [int]$d.vehicles.count; $vehicleCameras += $camName }
+            if ([int]$d.animals.count -gt 0) { $totalAnimals += [int]$d.animals.count; if ($d.animals.types) { $animalTypes += [string]$d.animals.types } }
+            if ($d.fire_smoke.detected -eq $true) {
+                $fireDetected = $true; $fireCameras += $camName
+                $severityOrder = @{ "none" = 0; "low" = 1; "medium" = 2; "high" = 3 }
+                $currentSev = if ($d.fire_smoke.severity) { [string]$d.fire_smoke.severity } else { "low" }
+                if ($severityOrder[$currentSev] -gt $severityOrder[$fireSeverity]) { $fireSeverity = $currentSev; $fireDistance = [string]$d.fire_smoke.estimated_distance }
+            }
+            # Update sensor with unverified status
+            $fp.Attrs["verified_status"]     = "unverified"
+            $fp.Attrs["verification_detail"] = "Pro model error: $($proResult.Error)"
+            $fp.Attrs["verification_model"]  = $geminiProModel
+            $fp.Attrs["verification_time"]   = (Get-Date).ToString("o")
+            Update-HaSensor -EntityId "sensor.farm_cam_${camIndex}_status" -State $fp.StateText -Attributes $fp.Attrs
+        } elseif ($proResult.Confirmed) {
+            Write-Log "${camName}: CONFIRMED by Pro — $($proResult.Description)"
+            $conf = $proResult.Confidence
+            # Aggregate from Pro-verified counts
+            if ($conf.humans.confirmed -eq $true) { $totalHumans += [int]$conf.humans.count; $humanCameras += $camName }
+            if ($conf.vehicles.confirmed -eq $true) { $totalVehicles += [int]$conf.vehicles.count; $vehicleCameras += $camName }
+            if ($conf.animals.confirmed -eq $true) {
+                $totalAnimals += [int]$conf.animals.count
+                if ($conf.animals.detail) { $animalTypes += [string]$conf.animals.detail }
+            }
+            if ($conf.fire_smoke.confirmed -eq $true) {
+                $fireDetected = $true; $fireCameras += $camName
+                $severityOrder = @{ "none" = 0; "low" = 1; "medium" = 2; "high" = 3 }
+                $currentSev = if ($fp.Data.fire_smoke.severity) { [string]$fp.Data.fire_smoke.severity } else { "low" }
+                if ($severityOrder[$currentSev] -gt $severityOrder[$fireSeverity]) { $fireSeverity = $currentSev; $fireDistance = [string]$fp.Data.fire_smoke.estimated_distance }
+            }
+            # Update sensor with confirmed status + Pro description
+            $fp.Attrs["verified_status"]     = "confirmed"
+            $fp.Attrs["verification_detail"] = [string]$proResult.Description
+            $fp.Attrs["verification_model"]  = $geminiProModel
+            $fp.Attrs["verification_time"]   = (Get-Date).ToString("o")
+            Update-HaSensor -EntityId "sensor.farm_cam_${camIndex}_status" -State $fp.StateText -Attributes $fp.Attrs
+        } else {
+            Write-Log "${camName}: REJECTED by Pro (false positive) — $($proResult.Description)"
+            # Don't aggregate security detections — this was a false positive
+            # Update sensor with false_positive status
+            $fp.Attrs["verified_status"]     = "false_positive"
+            $fp.Attrs["verification_detail"] = [string]$proResult.Description
+            $fp.Attrs["verification_model"]  = $geminiProModel
+            $fp.Attrs["verification_time"]   = (Get-Date).ToString("o")
+            Update-HaSensor -EntityId "sensor.farm_cam_${camIndex}_status" -State $fp.StateText -Attributes $fp.Attrs
+        }
+    }
+} else {
+    # No security detections — aggregate everything from first pass (rain already handled above)
+    foreach ($camName in $cameraFirstPass.Keys) {
+        $d = $cameraFirstPass[$camName].Data
+        if ([int]$d.humans.count -gt 0) { $totalHumans += [int]$d.humans.count; $humanCameras += $camName }
+        if ([int]$d.vehicles.count -gt 0) { $totalVehicles += [int]$d.vehicles.count; $vehicleCameras += $camName }
+        if ([int]$d.animals.count -gt 0) { $totalAnimals += [int]$d.animals.count; if ($d.animals.types) { $animalTypes += [string]$d.animals.types } }
+        if ($d.fire_smoke.detected -eq $true) {
+            $fireDetected = $true; $fireCameras += $camName
+            $severityOrder = @{ "none" = 0; "low" = 1; "medium" = 2; "high" = 3 }
+            $currentSev = if ($d.fire_smoke.severity) { [string]$d.fire_smoke.severity } else { "low" }
+            if ($severityOrder[$currentSev] -gt $severityOrder[$fireSeverity]) { $fireSeverity = $currentSev; $fireDistance = [string]$d.fire_smoke.estimated_distance }
+        }
+    }
+}
+
+# Track Pro token usage
+if ($proTickCalls -gt 0) {
+    Write-Log "Gemini Pro tokens this run: $proTickCalls calls, $proTickPrompt prompt, $proTickCompletion completion, $proTickTotal total"
+    Update-GeminiTokenStats -Source "ezviz_vision_pro" -Calls $proTickCalls -PromptTokens $proTickPrompt -CompletionTokens $proTickCompletion -TotalTokens $proTickTotal
 }
 
 # ============================================================
@@ -773,7 +1092,9 @@ foreach ($cam in $cameras) {
 Update-HaSensor -EntityId "sensor.farm_last_detections" -State "$totalFarmDetections" -Attributes $detAttrs
 
 # ============================================================
-# Alerts — all detections, always (TTS + phone, with throttling)
+# Alerts — verified detections + rain (TTS + phone with images, throttled)
+# Security alerts only fire after Pro verification (or on Pro failure fallback).
+# Rain alerts fire directly from Flash results (no Pro needed).
 # ============================================================
 
 if ($fireDetected) {
@@ -781,7 +1102,8 @@ if ($fireDetected) {
     $cd = $alertConfig[$alertKey].Cooldown
     if (-not (Test-AlertThrottled -Key $alertKey -MinutesCooldown $cd)) {
         $distNote = if ($fireDistance) { " It appears to be $fireDistance." } else { "" }
-        Send-Alert -AlertKey $alertKey -Message "Warning! Fire or smoke detected at the farm. Severity: $fireSeverity.$distNote Cameras: $($fireCameras -join ', ')."
+        $fireImage = if ($fireCameras.Count -gt 0) { $cameraImageUrls[$fireCameras[0]] } else { $null }
+        Send-Alert -AlertKey $alertKey -Message "Warning! Fire or smoke detected at the farm. Severity: $fireSeverity.$distNote Cameras: $($fireCameras -join ', ')." -ImageUrl $fireImage
         Set-AlertTime -Key $alertKey
     }
 }
@@ -790,7 +1112,8 @@ if ($totalHumans -gt 0) {
     $alertKey = "Farm_human"
     $cd = $alertConfig[$alertKey].Cooldown
     if (-not (Test-AlertThrottled -Key $alertKey -MinutesCooldown $cd)) {
-        Send-Alert -AlertKey $alertKey -Message "Farm alert. $totalHumans person or people detected at: $($humanCameras -join ', ')."
+        $humanImage = if ($humanCameras.Count -gt 0) { $cameraImageUrls[$humanCameras[0]] } else { $null }
+        Send-Alert -AlertKey $alertKey -Message "Farm alert. $totalHumans person or people detected at: $($humanCameras -join ', ')." -ImageUrl $humanImage
         Set-AlertTime -Key $alertKey
     }
 }
@@ -799,7 +1122,8 @@ if ($totalVehicles -gt 0) {
     $alertKey = "Farm_vehicle"
     $cd = $alertConfig[$alertKey].Cooldown
     if (-not (Test-AlertThrottled -Key $alertKey -MinutesCooldown $cd)) {
-        Send-Alert -AlertKey $alertKey -Message "Farm alert. $totalVehicles vehicle or vehicles detected at: $($vehicleCameras -join ', ')."
+        $vehicleImage = if ($vehicleCameras.Count -gt 0) { $cameraImageUrls[$vehicleCameras[0]] } else { $null }
+        Send-Alert -AlertKey $alertKey -Message "Farm alert. $totalVehicles vehicle or vehicles detected at: $($vehicleCameras -join ', ')." -ImageUrl $vehicleImage
         Set-AlertTime -Key $alertKey
     }
 }
@@ -808,7 +1132,12 @@ if ($totalAnimals -gt 0) {
     $alertKey = "Farm_animal"
     $cd = $alertConfig[$alertKey].Cooldown
     if (-not (Test-AlertThrottled -Key $alertKey -MinutesCooldown $cd)) {
-        Send-Alert -AlertKey $alertKey -Message "Farm alert. $totalAnimals animal or animals detected: $($animalTypes -join ', ')."
+        # Find first camera with animal detection for image
+        $animalImage = $null
+        foreach ($cn in $cameraFirstPass.Keys) {
+            if ([int]$cameraFirstPass[$cn].Data.animals.count -gt 0 -and $cameraImageUrls[$cn]) { $animalImage = $cameraImageUrls[$cn]; break }
+        }
+        Send-Alert -AlertKey $alertKey -Message "Farm alert. $totalAnimals animal or animals detected: $($animalTypes -join ', ')." -ImageUrl $animalImage
         Set-AlertTime -Key $alertKey
     }
 }
@@ -817,7 +1146,12 @@ if ($rainDetected) {
     $alertKey = "Farm_rain"
     $cd = $alertConfig[$alertKey].Cooldown
     if (-not (Test-AlertThrottled -Key $alertKey -MinutesCooldown $cd)) {
-        Send-Alert -AlertKey $alertKey -Message "Farm weather alert. Rain detected at the farm. Intensity: $rainIntensity."
+        # Find first camera with rain detection for image
+        $rainImage = $null
+        foreach ($cn in $cameraFirstPass.Keys) {
+            if ($cameraFirstPass[$cn].Data.rain.detected -eq $true -and $cameraImageUrls[$cn]) { $rainImage = $cameraImageUrls[$cn]; break }
+        }
+        Send-Alert -AlertKey $alertKey -Message "Farm weather alert. Rain detected at the farm. Intensity: $rainIntensity." -ImageUrl $rainImage
         Set-AlertTime -Key $alertKey
     }
 }

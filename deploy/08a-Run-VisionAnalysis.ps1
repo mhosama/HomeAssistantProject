@@ -52,6 +52,9 @@ $sambaWww = "\\192.168.0.239\config\www"
 
 if (-not (Test-Path $logDir)) { New-Item -Path $logDir -ItemType Directory -Force | Out-Null }
 
+# Ensure Samba connection (SYSTEM user has no cached credentials)
+try { $null = net use "\\192.168.0.239\config" /user:homeassistant terrabyte /persistent:no 2>&1 } catch {}
+
 # ============================================================
 # Schedule intervals (seconds)
 # ============================================================
@@ -86,6 +89,86 @@ if ((Test-Path $logFile) -and ((Get-Item $logFile).Length -gt 5MB)) {
 }
 
 # $now, $hour, etc. are recalculated each tick in the polling loop below
+
+# ============================================================
+# Gemini Token Stats (shared state file, cross-process locking)
+# ============================================================
+
+$geminiStatsFile = Join-Path $scriptDir ".gemini_token_stats.json"
+
+function Update-GeminiTokenStats {
+    param(
+        [string]$Source,
+        [int]$Calls = 0,
+        [int]$PromptTokens = 0,
+        [int]$CompletionTokens = 0,
+        [int]$TotalTokens = 0
+    )
+    if ($Calls -eq 0 -and $TotalTokens -eq 0) { return }
+
+    $mtx = $null
+    try {
+        $mtx = New-Object System.Threading.Mutex($false, "Global\HA-GeminiTokenStats")
+        $null = $mtx.WaitOne(5000)
+
+        $today = (Get-Date).ToString("yyyy-MM-dd")
+
+        if (Test-Path $geminiStatsFile) {
+            $stats = Get-Content $geminiStatsFile -Raw | ConvertFrom-Json
+        } else {
+            $stats = [PSCustomObject]@{ daily_date = $today; sources = [PSCustomObject]@{}; daily_history = @() }
+        }
+
+        # Daily rollover
+        if ($stats.daily_date -ne $today) {
+            $oldDate = $stats.daily_date
+            if ($oldDate -and $stats.sources.PSObject.Properties.Count -gt 0) {
+                $dayCalls = 0; $dayPrompt = 0; $dayCompletion = 0; $dayTotal = 0; $dayCost = 0
+                # Gemini 2.5 Flash: $0.30/$2.50, Pro: $1.25/$10.00 per M tokens
+                foreach ($p in $stats.sources.PSObject.Properties) {
+                    $dayCalls += [int]$p.Value.calls
+                    $dayPrompt += [int]$p.Value.prompt_tokens
+                    $dayCompletion += [int]$p.Value.completion_tokens
+                    $dayTotal += [int]$p.Value.total_tokens
+                    if ($p.Name -eq "ezviz_vision_pro") {
+                        $dayCost += ([int]$p.Value.prompt_tokens * 1.25 + [int]$p.Value.completion_tokens * 10.00) / 1000000
+                    } else {
+                        $dayCost += ([int]$p.Value.prompt_tokens * 0.30 + [int]$p.Value.completion_tokens * 2.50) / 1000000
+                    }
+                }
+                $dayCost = [math]::Round($dayCost, 4)
+                $entry = [PSCustomObject]@{
+                    date = $oldDate; calls = $dayCalls; prompt_tokens = $dayPrompt
+                    completion_tokens = $dayCompletion; total_tokens = $dayTotal
+                    estimated_cost_usd = $dayCost
+                }
+                $history = @($stats.daily_history) + @($entry)
+                if ($history.Count -gt 30) { $history = $history | Select-Object -Last 30 }
+                $stats.daily_history = $history
+            }
+            $stats.daily_date = $today
+            $stats.sources = [PSCustomObject]@{}
+        }
+
+        # Update source
+        if (-not $stats.sources.PSObject.Properties[$Source]) {
+            $stats.sources | Add-Member -NotePropertyName $Source -NotePropertyValue ([PSCustomObject]@{
+                calls = 0; prompt_tokens = 0; completion_tokens = 0; total_tokens = 0
+            }) -Force
+        }
+        $src = $stats.sources.$Source
+        $src.calls = [int]$src.calls + $Calls
+        $src.prompt_tokens = [int]$src.prompt_tokens + $PromptTokens
+        $src.completion_tokens = [int]$src.completion_tokens + $CompletionTokens
+        $src.total_tokens = [int]$src.total_tokens + $TotalTokens
+
+        $stats | ConvertTo-Json -Depth 10 | Set-Content $geminiStatsFile -Encoding UTF8
+    } catch {
+        # Non-critical
+    } finally {
+        if ($mtx) { try { $mtx.ReleaseMutex() } catch {} ; $mtx.Dispose() }
+    }
+}
 
 # ============================================================
 # State file (alert throttling + food tracking + camera schedules)
@@ -912,11 +995,14 @@ $workerScript = {
     )
 
     $result = @{
-        Camera     = $CameraName
-        Success    = $false
-        Data       = $null
-        Error      = $null
-        ImageBytes = $null
+        Camera           = $CameraName
+        Success          = $false
+        Data             = $null
+        Error            = $null
+        ImageBytes       = $null
+        PromptTokens     = 0
+        CompletionTokens = 0
+        TotalTokens      = 0
     }
 
     try {
@@ -965,7 +1051,14 @@ $workerScript = {
             return $result
         }
 
-        # 3. Extract JSON from response
+        # 3. Extract token usage from response
+        if ($geminiResp.usageMetadata) {
+            $result.PromptTokens     = [int]$geminiResp.usageMetadata.promptTokenCount
+            $result.CompletionTokens = [int]$geminiResp.usageMetadata.candidatesTokenCount
+            $result.TotalTokens      = [int]$geminiResp.usageMetadata.totalTokenCount
+        }
+
+        # 4. Extract JSON from response
         $responseText = $geminiResp.candidates[0].content.parts[0].text
 
         # Parse JSON response
@@ -1036,6 +1129,26 @@ foreach ($job in $jobs) {
 
 $pool.Close()
 $pool.Dispose()
+
+# ============================================================
+# Aggregate Gemini token usage from worker results
+# ============================================================
+
+$tickPromptTokens = 0; $tickCompletionTokens = 0; $tickTotalTokens = 0; $tickCalls = 0
+foreach ($r in $results) {
+    if ($r.TotalTokens -and [int]$r.TotalTokens -gt 0) {
+        $tickPromptTokens     += [int]$r.PromptTokens
+        $tickCompletionTokens += [int]$r.CompletionTokens
+        $tickTotalTokens      += [int]$r.TotalTokens
+        $tickCalls++
+    }
+}
+if ($tickCalls -gt 0) {
+    Write-Log "Gemini tokens this tick: $tickCalls calls, $tickPromptTokens prompt, $tickCompletionTokens completion, $tickTotalTokens total"
+    Update-GeminiTokenStats -Source "vision_analysis" -Calls $tickCalls -PromptTokens $tickPromptTokens -CompletionTokens $tickCompletionTokens -TotalTokens $tickTotalTokens
+} else {
+    Write-Log "Gemini tokens: no token data in results (results=$($results.Count))"
+}
 
 # ============================================================
 # Process results
@@ -1540,6 +1653,77 @@ foreach ($cam in $cameras) {
     }
 }
 Update-HaSensor -EntityId "sensor.vision_last_detections" -State "$totalDetections" -Attributes $detAttrs
+
+# ============================================================
+# Publish Gemini token usage sensor (read shared stats file)
+# ============================================================
+
+try {
+    if (Test-Path $geminiStatsFile) {
+        $tokenStats = Get-Content $geminiStatsFile -Raw | ConvertFrom-Json
+        $todayTotal = 0; $todayCalls = 0; $todayPrompt = 0; $todayCompletion = 0
+        foreach ($p in $tokenStats.sources.PSObject.Properties) {
+            $todayCalls      += [int]$p.Value.calls
+            $todayPrompt     += [int]$p.Value.prompt_tokens
+            $todayCompletion += [int]$p.Value.completion_tokens
+            $todayTotal      += [int]$p.Value.total_tokens
+        }
+        # Gemini pricing per million tokens (USD) — per-source model mapping
+        # Gemini 2.5 Flash: $0.30 input / $2.50 output
+        # Gemini 2.5 Pro:   $1.25 input / $10.00 output
+        $flashInputPM  = 0.30;  $flashOutputPM  = 2.50
+        $proInputPM    = 1.25;  $proOutputPM    = 10.00
+        $sourcePricing = @{
+            "ezviz_vision_pro" = @{ Input = $proInputPM;   Output = $proOutputPM }
+        }
+        # All other sources default to Flash pricing
+        function Get-SourceCost([string]$name, [int]$promptTok, [int]$completionTok) {
+            $p = $sourcePricing[$name]
+            if (-not $p) { $p = @{ Input = $flashInputPM; Output = $flashOutputPM } }
+            return [math]::Round(($promptTok * $p.Input + $completionTok * $p.Output) / 1000000, 4)
+        }
+
+        $todayCost = 0
+
+        $tokenAttrs = @{
+            friendly_name      = "Gemini Token Usage"
+            icon               = "mdi:brain"
+            unit_of_measurement = "tokens"
+            total_calls        = $todayCalls
+            prompt_tokens      = $todayPrompt
+            completion_tokens  = $todayCompletion
+        }
+
+        # Per-source breakdown (with model identification)
+        $proSources = @{ "ezviz_vision_pro" = $true }
+        foreach ($p in $tokenStats.sources.PSObject.Properties) {
+            $sn = $p.Name
+            $sv = $p.Value
+            $tokenAttrs["${sn}_calls"]             = [int]$sv.calls
+            $tokenAttrs["${sn}_prompt_tokens"]      = [int]$sv.prompt_tokens
+            $tokenAttrs["${sn}_completion_tokens"]   = [int]$sv.completion_tokens
+            $tokenAttrs["${sn}_total_tokens"]        = [int]$sv.total_tokens
+            $tokenAttrs["${sn}_model"]               = if ($proSources[$sn]) { "gemini-2.5-pro" } else { "gemini-2.5-flash" }
+            $srcCost = Get-SourceCost -name $sn -promptTok ([int]$sv.prompt_tokens) -completionTok ([int]$sv.completion_tokens)
+            $tokenAttrs["${sn}_cost_usd"]            = $srcCost
+            $todayCost += $srcCost
+        }
+        $todayCost = [math]::Round($todayCost, 4)
+        $tokenAttrs["estimated_cost_usd"] = $todayCost
+
+        # Daily history (last 7 days as JSON string for dashboard)
+        $history = @($tokenStats.daily_history) | Select-Object -Last 7
+        if ($history.Count -gt 0) {
+            $tokenAttrs["daily_history"] = ($history | ConvertTo-Json -Depth 5 -Compress)
+        } else {
+            $tokenAttrs["daily_history"] = "[]"
+        }
+
+        Update-HaSensor -EntityId "sensor.gemini_token_usage" -State "$todayTotal" -Attributes $tokenAttrs
+    }
+} catch {
+    Write-Log "Gemini token sensor update failed: $($_.Exception.Message)" "WARN"
+}
 
 # ============================================================
 # Save state

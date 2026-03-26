@@ -65,6 +65,86 @@ if ((Test-Path $logFile) -and ((Get-Item $logFile).Length -gt 1MB)) {
 Write-Log "=== Weather briefing run starting ==="
 
 # ============================================================
+# Gemini Token Stats (shared state file, cross-process locking)
+# ============================================================
+
+$geminiStatsFile = Join-Path $scriptDir ".gemini_token_stats.json"
+
+function Update-GeminiTokenStats {
+    param(
+        [string]$Source,
+        [int]$Calls = 0,
+        [int]$PromptTokens = 0,
+        [int]$CompletionTokens = 0,
+        [int]$TotalTokens = 0
+    )
+    if ($Calls -eq 0 -and $TotalTokens -eq 0) { return }
+
+    $mtx = $null
+    try {
+        $mtx = New-Object System.Threading.Mutex($false, "Global\HA-GeminiTokenStats")
+        $null = $mtx.WaitOne(5000)
+
+        $today = (Get-Date).ToString("yyyy-MM-dd")
+
+        if (Test-Path $geminiStatsFile) {
+            $stats = Get-Content $geminiStatsFile -Raw | ConvertFrom-Json
+        } else {
+            $stats = [PSCustomObject]@{ daily_date = $today; sources = [PSCustomObject]@{}; daily_history = @() }
+        }
+
+        # Daily rollover
+        if ($stats.daily_date -ne $today) {
+            $oldDate = $stats.daily_date
+            if ($oldDate -and $stats.sources.PSObject.Properties.Count -gt 0) {
+                $dayCalls = 0; $dayPrompt = 0; $dayCompletion = 0; $dayTotal = 0; $dayCost = 0
+                # Gemini 2.5 Flash: $0.30/$2.50, Pro: $1.25/$10.00 per M tokens
+                foreach ($p in $stats.sources.PSObject.Properties) {
+                    $dayCalls += [int]$p.Value.calls
+                    $dayPrompt += [int]$p.Value.prompt_tokens
+                    $dayCompletion += [int]$p.Value.completion_tokens
+                    $dayTotal += [int]$p.Value.total_tokens
+                    if ($p.Name -eq "ezviz_vision_pro") {
+                        $dayCost += ([int]$p.Value.prompt_tokens * 1.25 + [int]$p.Value.completion_tokens * 10.00) / 1000000
+                    } else {
+                        $dayCost += ([int]$p.Value.prompt_tokens * 0.30 + [int]$p.Value.completion_tokens * 2.50) / 1000000
+                    }
+                }
+                $dayCost = [math]::Round($dayCost, 4)
+                $entry = [PSCustomObject]@{
+                    date = $oldDate; calls = $dayCalls; prompt_tokens = $dayPrompt
+                    completion_tokens = $dayCompletion; total_tokens = $dayTotal
+                    estimated_cost_usd = $dayCost
+                }
+                $history = @($stats.daily_history) + @($entry)
+                if ($history.Count -gt 30) { $history = $history | Select-Object -Last 30 }
+                $stats.daily_history = $history
+            }
+            $stats.daily_date = $today
+            $stats.sources = [PSCustomObject]@{}
+        }
+
+        # Update source
+        if (-not $stats.sources.PSObject.Properties[$Source]) {
+            $stats.sources | Add-Member -NotePropertyName $Source -NotePropertyValue ([PSCustomObject]@{
+                calls = 0; prompt_tokens = 0; completion_tokens = 0; total_tokens = 0
+            }) -Force
+        }
+        $src = $stats.sources.$Source
+        $src.calls = [int]$src.calls + $Calls
+        $src.prompt_tokens = [int]$src.prompt_tokens + $PromptTokens
+        $src.completion_tokens = [int]$src.completion_tokens + $CompletionTokens
+        $src.total_tokens = [int]$src.total_tokens + $TotalTokens
+
+        $stats | ConvertTo-Json -Depth 10 | Set-Content $geminiStatsFile -Encoding UTF8
+    } catch {
+        # Non-critical
+    } finally {
+        if ($mtx) { try { $mtx.ReleaseMutex() } catch {} ; $mtx.Dispose() }
+    }
+}
+
+# ============================================================
 # STEP 1: Fetch Open-Meteo forecast
 # ============================================================
 
@@ -194,6 +274,7 @@ $geminiBody = @{
 } | ConvertTo-Json -Depth 10
 
 $ttsText = $null
+$ttsBriefing = $null
 $detailedSummary = $null
 
 Write-Log "Sending weather data to Gemini ($geminiModel)..."
@@ -203,12 +284,23 @@ try {
         -Body ([System.Text.Encoding]::UTF8.GetBytes($geminiBody)) `
         -ContentType "application/json; charset=utf-8" -TimeoutSec 30
 
+    # Track Gemini token usage
+    if ($geminiResp.usageMetadata) {
+        try {
+            Update-GeminiTokenStats -Source "weather_briefing" -Calls 1 `
+                -PromptTokens ([int]$geminiResp.usageMetadata.promptTokenCount) `
+                -CompletionTokens ([int]$geminiResp.usageMetadata.candidatesTokenCount) `
+                -TotalTokens ([int]$geminiResp.usageMetadata.totalTokenCount)
+        } catch {}
+    }
+
     $responseText = $geminiResp.candidates[0].content.parts[0].text
     $parsed = $responseText | ConvertFrom-Json
 
     Write-Log "Gemini response: $($parsed | ConvertTo-Json -Compress)"
 
     # Build TTS text from briefing + optional parts
+    $ttsBriefing = $parsed.tts_briefing
     $parts = @()
     if ($parsed.tts_briefing) { $parts += $parsed.tts_briefing }
     if ($parsed.solar_impact) { $parts += $parsed.solar_impact }
@@ -235,6 +327,7 @@ try {
 
 if (-not $ttsText) {
     Write-Log "Using fallback weather summary (Gemini unavailable)" "WARN"
+    $ttsBriefing = $null
     $ttsText = "Today will be $minTemp to $maxTemp degrees"
     if ($totalPrecip -gt 0) {
         $ttsText += " with ${totalPrecip}mm of rain expected"
@@ -271,6 +364,7 @@ $sensorBody = @{
         max_wind_kmh     = $maxWind
         conditions       = $conditions
         tts_text         = $ttsText
+        tts_briefing     = $ttsBriefing
         detailed_summary = $detailedSummary
         forecast_hours       = $daytimeHours.Count
         hourly_cloud_cover   = $hourlyCloud

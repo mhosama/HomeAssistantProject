@@ -57,7 +57,7 @@
   - Kitchen, Dining Room, Front Home, Airbnb, Study, Guest Room, Bedroom, Baby Room speakers
   - TV Chromecast
   - Home Speakers (group)
-  - [ ] Test TTS (text-to-speech) announcements
+  - [x] Test TTS (text-to-speech) announcements — fixed: internal_url changed from `.local` to IP (Cast speakers can't resolve mDNS)
   - [ ] Set up media player cards on dashboard
 
 ## Dashboards
@@ -89,7 +89,7 @@
   - [ ] Verify TTT shows solar-aware values (higher during sunny daytime vs old load-only estimate)
   - [ ] Verify projection graph on Overview dashboard shows solar/load/SOC curves
 - [x] **Vision AI dashboards updated** - Pool Status + Garage Doors sections added to Security > Vision AI tab + Overview (deploy/08b-Add-VisionDashboard.ps1)
-- [ ] **Info Dashboard** - Run `deploy/14-Setup-InfoDashboard.ps1` to create Info dashboard with vision analysis stats
+- [x] **Info Dashboard** - `deploy/14-Setup-InfoDashboard.ps1` deployed — Vision Stats, Motion Activity, Street Camera (with plate OCR stats)
 - [ ] **Post-deploy**: Verify entity IDs match actual devices (door sensors, motion sensors)
 - [ ] **Post-deploy**: Rename Sonoff entities for cleaner display names
 - [ ] **Post-deploy**: Verify Sunsynk Power Flow Card entity mappings
@@ -219,6 +219,27 @@
 - [x] **Known plate image persistence** — `entity_picture` now persisted in plate state; unknown plates no longer wipe the last known plate image
 - [x] **Plate crop orientation fix** — aspect-ratio-aware rotation + dual-orientation OCR with SA province suffix scoring
 - [x] **Improve license plate OCR** — replaced Tesseract with Gemini Flash as primary OCR (Tesseract kept as fallback). SA plate format validation, daily OCR stats sensor + Info dashboard tab
+- [x] **Fix Gemini plate OCR cost** — reversed to Tesseract-first, Gemini-fallback-on-contour-crop-only. Added daily cap (100). ~95% reduction in Gemini plate calls.
+- [x] **Info dashboard deployed** — `14-Setup-InfoDashboard.ps1` run, plate OCR stats now visible on Street Camera tab
+- [x] **Gemini token usage tracking** — All 5 Gemini callers (08a vision, 09a weather, 10a ezviz, ProcessCropFiles plate OCR, gemini_verify loitering) now capture `usageMetadata` tokens, write to shared `.gemini_token_stats.json`, published as `sensor.gemini_token_usage` by 08a, Info dashboard Gemini Usage tab with per-source breakdown + daily cost history
+
+## Smart Energy Scheduler
+
+- [x] **Setup script** - `deploy/18-Setup-EnergySchedule.ps1` creates input_booleans, sensors, automations, scheduled tasks, dashboard
+- [x] **Daily refresh** - `deploy/18a-Refresh-EnergySchedule.ps1` reads weather → Gemini → optimal device schedule
+- [x] **5-min runner** - `deploy/18b-Run-EnergySchedule.ps1` switches devices on/off per hourly plan
+- [x] **Morning Greeting updated** - `deploy/06a-Refresh-News.ps1` includes energy schedule TTS summary
+- [x] **Sensor recreation** - `deploy/11-Recreate-Sensors.ps1` includes energy_schedule + energy_schedule_log
+- [x] **Integrity check** - `deploy/17-Integrity-Check.ps1` covers all new entities + tasks
+- [ ] **Run setup** - Execute `18-Setup-EnergySchedule.ps1` to create input_booleans, sensors, automations, dashboard
+- [ ] **Test daily refresh** - Run `18a-Refresh-EnergySchedule.ps1` manually → verify sensor.energy_schedule populated
+- [ ] **Test 5-min runner** - Run `18b-Run-EnergySchedule.ps1` manually → verify device switching logic
+- [ ] **Verify dashboard** - Check Overview → Energy Schedule section (table + ApexCharts + toggles)
+- [ ] **Deploy to server** - Deploy scheduled tasks (`HA-RefreshEnergySchedule`, `HA-RunEnergySchedule`) to host server
+- [ ] **Verify automations** - Test `automation.borehole_pump_schedule` and `automation.irrigation_veggie_garden`
+- [ ] **Verify entity IDs** - Confirm borehole pump (`switch.sonoff_10016a6ba8`) and irrigation valve (`switch.sonoff_1001614e7a`) entity IDs are correct
+- [ ] **Run integrity check** - `17-Integrity-Check.ps1` passes with all new entities
+- [ ] **Monitor logs** - Check `deploy/logs/energy_schedule.log` for clean execution
 
 ## Network & Security
 
@@ -251,9 +272,22 @@
   - [ ] Test arrival/departure TTS on kitchen speaker
   - Uses undocumented API (built-in integration was removed in 2024.2). User has Gold/Platinum membership.
 - [ ] **Garmin Dashcam** — BLOCKED: no public API, no HA integration exists. Revisit later.
-- [ ] **Google Find Hub** — HACS `BSkando/GoogleFindMy-HA`, Horizen tags + phones, 60-min polling
-  - Complex auth setup (Python script to generate `secrets.json`)
-  - SA coverage may be spotty in suburban areas
+- [x] **Google Find Hub** — HACS `BSkando/GoogleFindMy-HA`, Horizen tags + vehicles, 5-min polling
+  - [x] Setup script created: `deploy/20-Setup-GoogleFindMy.ps1` (HACS install + config flow + automations)
+  - [x] Dashboard script created: `deploy/20a-Add-FindMyDashboard.ps1` (Find My tab on Presence + Overview section)
+  - [x] Integrity check updated: `deploy/17-Integrity-Check.ps1` (2 automations + 6 trackers)
+  - [x] Generated `secrets.json` using GoogleFindMyTools (moons-14 cert_sha1 fork for FCM fix)
+  - [x] Added `GoogleFindMySecretsPath` to `deploy/config.ps1`
+  - [x] Ran `20-Setup-GoogleFindMy.ps1` — HACS install, config flow, automations created
+  - [x] 6 devices discovered: Galaxy S24 Ultra, KIA SORENTO, Honey Trap, FORD EVEREST, Elle tag, Lana tag
+  - [x] Entity IDs added to `17-Integrity-Check.ps1` (device_tracker.{device_name} pattern)
+  - [x] Ran `20a-Add-FindMyDashboard.ps1` — Find My tab + Overview section
+  - [x] Ran `17-Integrity-Check.ps1` — automations 20/20, trackers 11/11, dashboards 10/10
+  - [x] External URL set on HA (required for FCM push transport)
+  - [x] Full HA restart (required after external URL set for FCM to connect)
+  - **Key lessons**: FCM needs external_url + full HA restart (not just reload). GoogleFindMyTools needs cert_sha1 fork. Config flow: user→secrets_json→device_selection (secrets must be escaped as raw string, not ConvertTo-Json). Entity IDs are device_tracker.{device_name}, not device_tracker.googlefindmy_*.
+  - [ ] Verify location history retention in HA (default recorder keeps 10 days, sufficient for 5-day requirement)
+  - SA suburban coverage: 4/6 devices showing home, 2 tags unknown (expected for Bluetooth-only tags)
 - [ ] **EZVIZ Farm Cameras** — Built-in `ezviz` integration (EU region), cloud-only entities (no live stream on 4G)
   - [x] Deploy scripts created: `10-Setup-Ezviz.ps1`, `10a-Run-EzvizVision.ps1`, `10b-Add-EzvizDashboard.ps1`
   - [x] Sensors: 6x per-camera status, fire/smoke, rain, animal summary, human/vehicle summary
@@ -279,8 +313,8 @@
 
 - [x] **Integrity check script** - `deploy/17-Integrity-Check.ps1` validates sensors, cameras, automations, dashboards, scheduled tasks
   - Run with `-IncludeTasks` on server to also check scheduled tasks + host processes + log freshness + sensor recency
-  - Current: 55 sensors, 20 cameras, 12 automations, 9 dashboards, 8 scheduled tasks, 5 host processes
+  - Current: 56 sensors, 20 cameras, 12 automations, 9 dashboards, 8 scheduled tasks, 5 host processes
 - [x] **Garage camera stale image fix** - `Test-IsDetection` now includes `human_detected` for garage camera, so person alerts get fresh snapshots
 - [x] **Good Night automation deployed** - `05c-Setup-GoodNight.ps1` run against HA (was previously only a local script)
 
-*Last updated: 2026-03-19 (Gemini plate OCR, plate OCR stats sensor, Info dashboard Street Camera tab)*
+*Last updated: 2026-03-22 (Smart Energy Scheduler — 18/18a/18b scripts, Gemini-optimized device scheduling)*

@@ -224,8 +224,8 @@ $plateOcrTemplate = @"
 
 | Metric | Value |
 |--------|-------|
-| Gemini Calls | {{ state_attr('sensor.street_cam_plate_ocr_stats', 'gemini_calls_today') | default(0) }} |
-| Tesseract Fallback | {{ state_attr('sensor.street_cam_plate_ocr_stats', 'tesseract_calls_today') | default(0) }} |
+| Tesseract (Primary) | {{ state_attr('sensor.street_cam_plate_ocr_stats', 'tesseract_calls_today') | default(0) }} |
+| Gemini (Fallback) | {{ state_attr('sensor.street_cam_plate_ocr_stats', 'gemini_calls_today') | default(0) }} |
 | Plates Detected | {{ state_attr('sensor.street_cam_plate_ocr_stats', 'plates_detected_today') | default(0) }} |
 | Known Plates Matched | {{ state_attr('sensor.street_cam_plate_ocr_stats', 'known_plates_today') | default(0) }} |
 | Last Plate | {{ states('sensor.street_cam_last_plate') }} ({{ state_attr('sensor.street_cam_last_plate', 'owner') | default('unknown') }}) |
@@ -247,6 +247,64 @@ $hourlyDetectionTemplate = @"
 {% endfor -%}
 {% else -%}
 *No hourly data available.*
+{% endif %}
+"@
+
+# ============================================================
+# Gemini Token Usage templates
+# ============================================================
+
+$geminiTodayTemplate = @"
+## Today's Gemini API Usage
+
+{% set s = 'sensor.gemini_token_usage' -%}
+| Metric | Value |
+|--------|-------|
+| Total Calls | {{ state_attr(s, 'total_calls') | default(0) }} |
+| Prompt Tokens | {{ '{:,}'.format(state_attr(s, 'prompt_tokens') | default(0) | int) }} |
+| Completion Tokens | {{ '{:,}'.format(state_attr(s, 'completion_tokens') | default(0) | int) }} |
+| **Total Tokens** | **{{ '{:,}'.format(states(s) | default(0) | int) }}** |
+| **Estimated Cost** | **`$`{{ state_attr(s, 'estimated_cost_usd') | default(0) }}** |
+"@
+
+$geminiSourceTemplate = @"
+## Per-Source Breakdown
+
+{% set s = 'sensor.gemini_token_usage' -%}
+{% macro model_badge(src) -%}
+{% set m = state_attr(s, src ~ '_model') | default('') -%}
+{% if 'pro' in m %}**Pro**{% elif m %}Flash{% else %}-{% endif -%}
+{% endmacro -%}
+{% macro src_row(label, src) -%}
+| {{ label }} | {{ model_badge(src) }} | {{ state_attr(s, src ~ '_calls') | default(0) }} | {{ '{:,}'.format(state_attr(s, src ~ '_prompt_tokens') | default(0) | int) }} | {{ '{:,}'.format(state_attr(s, src ~ '_completion_tokens') | default(0) | int) }} | {{ '{:,}'.format(state_attr(s, src ~ '_total_tokens') | default(0) | int) }} | `$`{{ state_attr(s, src ~ '_cost_usd') | default(0) }} |
+{% endmacro -%}
+| Source | Model | Calls | Prompt | Completion | Total | Cost |
+|--------|-------|-------|--------|------------|-------|------|
+{{ src_row('Vision Analysis', 'vision_analysis') -}}
+{{ src_row('Weather Briefing', 'weather_briefing') -}}
+{{ src_row('EZVIZ Vision', 'ezviz_vision') -}}
+{{ src_row('EZVIZ Verify', 'ezviz_vision_pro') -}}
+{{ src_row('Plate OCR', 'plate_ocr') -}}
+{{ src_row('Loitering Verify', 'loitering_verify') -}}
+{{ src_row('Energy Schedule', 'energy_schedule') -}}
+
+*Pricing: Flash `$`0.30/`$`2.50, Pro `$`1.25/`$`10.00 per M input/output tokens*
+"@
+
+$geminiHistoryTemplate = @"
+## Daily History (Last 7 Days)
+
+{% set s = 'sensor.gemini_token_usage' -%}
+{% set hist_json = state_attr(s, 'daily_history') -%}
+{% if hist_json and hist_json != '[]' -%}
+{% set hist = hist_json | from_json -%}
+| Date | Calls | Total Tokens | Est. Cost |
+|------|-------|-------------|-----------|
+{% for day in hist | reverse -%}
+| {{ day.date }} | {{ day.calls }} | {{ '{:,}'.format(day.total_tokens | int) }} | `$`{{ day.estimated_cost_usd }} |
+{% endfor -%}
+{% else -%}
+*No historical data yet. History accumulates daily.*
 {% endif %}
 "@
 
@@ -343,6 +401,35 @@ $dashboardConfig = @{
                 }
             )
         }
+        @{
+            title = "Gemini Usage"
+            path  = "gemini-usage"
+            icon  = "mdi:brain"
+            cards = @(
+                @{
+                    type       = "custom:mushroom-template-card"
+                    primary    = "Gemini API Token Usage"
+                    icon       = "mdi:brain"
+                    icon_color = "teal"
+                    secondary  = "{{ '{:,}'.format(states('sensor.gemini_token_usage') | default(0) | int) }} tokens today (~`$`{{ state_attr('sensor.gemini_token_usage', 'estimated_cost_usd') | default(0) }})"
+                }
+                @{
+                    type    = "markdown"
+                    title   = "Today's Totals"
+                    content = $geminiTodayTemplate
+                }
+                @{
+                    type    = "markdown"
+                    title   = "Per-Source Breakdown"
+                    content = $geminiSourceTemplate
+                }
+                @{
+                    type    = "markdown"
+                    title   = "Daily History"
+                    content = $geminiHistoryTemplate
+                }
+            )
+        }
     )
 }
 
@@ -376,5 +463,6 @@ Write-Host "  Info dashboard:" -ForegroundColor Green
 Write-Host "    - Vision Analysis Stats: today's total, per-camera counts, daily history" -ForegroundColor White
 Write-Host "    - Motion Activity: event log, active suppressions" -ForegroundColor White
 Write-Host "    - Street Camera: detection counts, plate OCR stats, hourly breakdown" -ForegroundColor White
+Write-Host "    - Gemini Usage: token counts, per-source breakdown, daily cost history" -ForegroundColor White
 Write-Host "    - View at: http://$($Config.HA_IP):8123/info-dashboard" -ForegroundColor White
 Write-Host ""
