@@ -216,39 +216,90 @@ def publish_metrics(status="running"):
 
     # Publish plate OCR stats
     try:
+        today = date.today().strftime("%Y-%m-%d")
+        ocr_defaults = {"gemini_calls_today": 0, "tesseract_calls_today": 0,
+                        "plates_detected_today": 0, "known_plates_today": 0}
+        ocr_stats = ocr_defaults.copy()
         if os.path.exists(config.PLATE_OCR_STATS_PATH):
             with open(config.PLATE_OCR_STATS_PATH, "r") as f:
-                ocr_stats = json.load(f)
-            today = date.today().strftime("%Y-%m-%d")
-            if ocr_stats.get("date") == today:
-                push_sensor("sensor.street_cam_plate_ocr_stats", ocr_stats.get("gemini_calls_today", 0), {
-                    "friendly_name": "Street Cam Plate OCR Stats",
-                    "icon": "mdi:card-text-outline",
-                    "gemini_calls_today": ocr_stats.get("gemini_calls_today", 0),
-                    "tesseract_calls_today": ocr_stats.get("tesseract_calls_today", 0),
-                    "plates_detected_today": ocr_stats.get("plates_detected_today", 0),
-                    "known_plates_today": ocr_stats.get("known_plates_today", 0),
-                })
-            else:
-                push_sensor("sensor.street_cam_plate_ocr_stats", 0, {
-                    "friendly_name": "Street Cam Plate OCR Stats",
-                    "icon": "mdi:card-text-outline",
-                    "gemini_calls_today": 0,
-                    "tesseract_calls_today": 0,
-                    "plates_detected_today": 0,
-                    "known_plates_today": 0,
-                })
-        else:
-            push_sensor("sensor.street_cam_plate_ocr_stats", 0, {
-                "friendly_name": "Street Cam Plate OCR Stats",
-                "icon": "mdi:card-text-outline",
-                "gemini_calls_today": 0,
-                "tesseract_calls_today": 0,
-                "plates_detected_today": 0,
-                "known_plates_today": 0,
-            })
+                raw = json.load(f)
+            if raw.get("date") == today:
+                ocr_stats.update({k: raw.get(k, 0) for k in ocr_defaults})
+
+        push_sensor("sensor.street_cam_plate_ocr_stats", ocr_stats["gemini_calls_today"], {
+            "friendly_name": "Street Cam Plate OCR Stats",
+            "icon": "mdi:card-text-outline",
+            **ocr_stats,
+        })
     except Exception:
         logger.exception("Error publishing plate OCR stats")
+
+    # Publish plate state sensors (last_plate, known_plates_today, loitering)
+    # These are normally pushed by ProcessCropFiles on detection, but must also
+    # be kept alive here so they survive HA restarts without a server reboot.
+    try:
+        plate_state = {}
+        if os.path.exists(config.PLATE_STATE_PATH):
+            with open(config.PLATE_STATE_PATH, "r") as f:
+                plate_state = json.load(f)
+
+        # Last plate sensor — only create if missing (ProcessCropFiles keeps this current)
+        try:
+            resp = requests.get(
+                f"{config.HA_URL}/api/states/sensor.street_cam_last_plate",
+                headers={"Authorization": f"Bearer {config.HA_TOKEN}"},
+                timeout=5,
+            )
+            if resp.status_code == 404:
+                last_plate = plate_state.get("last_plate", "none")
+                last_plate_attrs = {
+                    "friendly_name": "Street Cam Last Plate",
+                    "icon": "mdi:car-info",
+                }
+                if plate_state.get("last_known_image"):
+                    last_plate_attrs["entity_picture"] = plate_state["last_known_image"]
+                if plate_state.get("last_known_owner"):
+                    last_plate_attrs["owner"] = plate_state["last_known_owner"]
+                push_sensor("sensor.street_cam_last_plate", last_plate, last_plate_attrs)
+        except Exception:
+            pass  # Non-critical
+
+        # Known plates today sensor
+        today = date.today().strftime("%Y-%m-%d")
+        known_today = plate_state.get("known_today", {})
+        known_date = plate_state.get("known_date", "")
+        if known_date != today:
+            known_today = {}
+        total_known = sum(d.get("count", 0) for d in known_today.values())
+        plates_list = sorted(
+            [{"plate": p, "owner": d.get("owner", ""), "count": d.get("count", 0),
+              "last_seen": d.get("last_seen", "")}
+             for p, d in known_today.items()],
+            key=lambda x: x["last_seen"], reverse=True
+        )
+        push_sensor("sensor.street_cam_known_plates_today", total_known, {
+            "friendly_name": "Street Cam Known Plates Today",
+            "icon": "mdi:car-multiple",
+            "unit_of_measurement": "sightings",
+            "plates": plates_list,
+        })
+
+        # Loitering sensor — only create if missing (don't overwrite active alerts from DetectObjects3)
+        try:
+            resp = requests.get(
+                f"{config.HA_URL}/api/states/sensor.street_cam_loitering",
+                headers={"Authorization": f"Bearer {config.HA_TOKEN}"},
+                timeout=5,
+            )
+            if resp.status_code == 404:
+                push_sensor("sensor.street_cam_loitering", "clear", {
+                    "friendly_name": "Street Cam Loitering",
+                    "icon": "mdi:account-clock",
+                })
+        except Exception:
+            pass  # Non-critical — DetectObjects3 will create it on next detection
+    except Exception:
+        logger.exception("Error publishing plate state sensors")
 
     logger.info(
         "Published: total=%d, people=%d, vehicles=%d, last=%s",
