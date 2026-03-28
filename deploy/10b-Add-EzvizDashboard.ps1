@@ -183,6 +183,45 @@ $farmView = @{
             )
         }
         # AI Verification section (Flash first pass + Pro second pass)
+        @{
+            type  = "vertical-stack"
+            cards = @(
+                @{
+                    type       = "custom:mushroom-template-card"
+                    primary    = "AI Verification"
+                    icon       = "mdi:shield-check"
+                    icon_color = "teal"
+                    secondary  = "Flash detection + Pro verification"
+                }
+                @{
+                    type    = "markdown"
+                    content = @"
+{% set ns = namespace(has_detection=false) %}
+{% for n in [1, 3, 5] %}
+{% set s = 'sensor.farm_cam_' ~ n ~ '_status' %}
+{% set st = states(s) %}
+{% if st not in ['unknown', 'unavailable', 'clear', 'error'] %}
+{% set ns.has_detection = true %}
+### Farm Camera {{ n }}
+**Flash (quick):** {{ st }}
+{% set vs = state_attr(s, 'verified_status') %}
+{% if vs and vs != '' %}
+{% if vs == 'confirmed' %}**Pro (verified):** Confirmed{% elif vs == 'false_positive' %}**Pro (verified):** False positive{% else %}**Pro (verified):** Unverified{% endif %}
+{% set vd = state_attr(s, 'verification_detail') %}
+{% if vd and vd != '' %}
+> {{ vd }}
+{% endif %}
+{% else %}
+*Awaiting verification...*
+{% endif %}
+---
+{% endif %}
+{% endfor %}
+{% if not ns.has_detection %}*All cameras clear - no detections to verify*{% endif %}
+"@
+                }
+            )
+        }
         # Per-camera snapshot + status section
         @{
             type  = "vertical-stack"
@@ -281,7 +320,12 @@ $farmView = @{
 {% if hist_json %}
 {% set entries = hist_json | from_json %}
 {% for e in entries | reverse %}
-- _{{ as_timestamp(e.ts) | timestamp_custom('%H:%M %d %b') }}_ - {{ e.summary }}
+{% set icon = '' %}
+{% if e.verified == 'confirmed' %}{% set icon = ' [OK]' %}
+{% elif e.verified == 'false_positive' %}{% set icon = ' [X]' %}
+{% elif e.verified == 'unverified' %}{% set icon = ' [!]' %}
+{% endif %}
+- _{{ as_timestamp(e.ts) | timestamp_custom('%H:%M %d %b') }}_ - {{ e.summary }}{{ icon }}
 {% endfor %}
 {% set latest_img = state_attr(s, cam ~ '_image') %}
 {% if latest_img %}<a href="{{ latest_img }}?t={{ now().timestamp() | int }}" target="_blank"><img src="{{ latest_img }}?t={{ now().timestamp() | int }}" style="width:100%;max-width:480px;border-radius:8px"></a>{% endif %}
@@ -291,6 +335,7 @@ $farmView = @{
 ---
 {% endif %}
 {% endfor %}
+_[OK] Pro confirmed | [X] Pro rejected | [!] Pro error_
 {% else %}
 *No farm detections recorded yet*
 {% endif %}
