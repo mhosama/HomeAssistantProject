@@ -321,9 +321,9 @@ $farmView = @{
 {% set entries = hist_json | from_json %}
 {% for e in entries | reverse %}
 {% set icon = '' %}
-{% if e.verified == 'confirmed' %}{% set icon = ' ✅' %}
-{% elif e.verified == 'false_positive' %}{% set icon = ' ❌' %}
-{% elif e.verified == 'unverified' %}{% set icon = ' ⚠️' %}
+{% if e.verified == 'confirmed' %}{% set icon = ' [OK]' %}
+{% elif e.verified == 'false_positive' %}{% set icon = ' [X]' %}
+{% elif e.verified == 'unverified' %}{% set icon = ' [!]' %}
 {% endif %}
 - _{{ as_timestamp(e.ts) | timestamp_custom('%H:%M %d %b') }}_ - {{ e.summary }}{{ icon }}
 {% endfor %}
@@ -335,7 +335,7 @@ $farmView = @{
 ---
 {% endif %}
 {% endfor %}
-_✅ Pro confirmed · ❌ Pro rejected · ⚠️ Pro error_
+_[OK] Pro confirmed | [X] Pro rejected | [!] Pro error_
 {% else %}
 *No farm detections recorded yet*
 {% endif %}
