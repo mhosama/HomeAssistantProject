@@ -373,9 +373,9 @@ No detections yet today.
                         @{
                             type    = "markdown"
                             content = @"
-{% if states('sensor.street_cam_loitering') == 'alert' %}**Loitering Detected** — {{ state_attr('sensor.street_cam_loitering', 'object_type') }} for {{ state_attr('sensor.street_cam_loitering', 'duration_seconds') }}s
+{% if states('sensor.street_cam_loitering') == 'alert' %}**Loitering Detected** - {{ state_attr('sensor.street_cam_loitering', 'object_type') }} for {{ state_attr('sensor.street_cam_loitering', 'duration_seconds') }}s
 Track {{ state_attr('sensor.street_cam_loitering', 'track_id') }} | {{ state_attr('sensor.street_cam_loitering', 'detected_at')[:19] }}{% else %}No active loitering.{% if state_attr('sensor.street_cam_loitering', 'detected_at') %}
-*Last: {{ state_attr('sensor.street_cam_loitering', 'object_type') }} — {{ state_attr('sensor.street_cam_loitering', 'detected_at')[:19] }} ({{ state_attr('sensor.street_cam_loitering', 'duration_seconds') }}s)*{% endif %}{% endif %}
+*Last: {{ state_attr('sensor.street_cam_loitering', 'object_type') }} - {{ state_attr('sensor.street_cam_loitering', 'detected_at')[:19] }} ({{ state_attr('sensor.street_cam_loitering', 'duration_seconds') }}s)*{% endif %}{% endif %}
 "@
                         }
                         @{
@@ -437,7 +437,7 @@ No plates detected yet.
                             content = @"
 {% if state_attr('sensor.street_cam_last_plate', 'known') == true and state_attr('sensor.street_cam_last_plate', 'entity_picture') %}
 <img src="{{ state_attr('sensor.street_cam_last_plate', 'entity_picture') }}?t={{ now().timestamp() | int }}" style="max-width:100%;border-radius:8px;" />
-**{{ state_attr('sensor.street_cam_last_plate', 'owner') }}** — {{ states('sensor.street_cam_last_plate') }}
+**{{ state_attr('sensor.street_cam_last_plate', 'owner') }}** - {{ states('sensor.street_cam_last_plate') }}
 {% else %}
 No known plate image yet.
 {% endif %}

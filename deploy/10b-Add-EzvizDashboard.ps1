@@ -217,7 +217,7 @@ $farmView = @{
 ---
 {% endif %}
 {% endfor %}
-{% if not ns.has_detection %}*All cameras clear — no detections to verify*{% endif %}
+{% if not ns.has_detection %}*All cameras clear - no detections to verify*{% endif %}
 "@
                 }
             )
@@ -294,13 +294,13 @@ $farmView = @{
                 }
             )
         }
-        # Recent Farm Detections section
+        # Recent Farm Detections section — per-camera detection trail
         @{
             type  = "vertical-stack"
             cards = @(
                 @{
                     type       = "custom:mushroom-template-card"
-                    primary    = "Recent Detections"
+                    primary    = "Detection Trail"
                     icon       = "mdi:history"
                     icon_color = "purple"
                     secondary  = "{{ states('sensor.farm_last_detections') }} buffered"
@@ -315,13 +315,27 @@ $farmView = @{
 {% set cam = 'FarmCam' ~ n %}
 {% set cnt = state_attr(s, cam ~ '_count') | int(0) %}
 {% if cnt > 0 %}
-**Farm Camera {{ n }}** — {{ state_attr(s, cam ~ '_last_summary') }}
-_{{ as_timestamp(state_attr(s, cam ~ '_last')) | timestamp_custom('%H:%M %d %b') }}_
-{% set img = state_attr(s, cam ~ '_image') %}
-{% if img %}<a href="{{ img }}?t={{ now().timestamp() | int }}" target="_blank"><img src="{{ img }}?t={{ now().timestamp() | int }}" style="width:100%;max-width:480px;border-radius:8px"></a>{% endif %}
+{% set hist_json = state_attr(s, cam ~ '_history') %}
+**Farm Camera {{ n }}** ({{ cnt }} detection{{ 's' if cnt > 1 }})
+{% if hist_json %}
+{% set entries = hist_json | from_json %}
+{% for e in entries | reverse %}
+{% set icon = '' %}
+{% if e.verified == 'confirmed' %}{% set icon = ' ✅' %}
+{% elif e.verified == 'false_positive' %}{% set icon = ' ❌' %}
+{% elif e.verified == 'unverified' %}{% set icon = ' ⚠️' %}
+{% endif %}
+- _{{ as_timestamp(e.ts) | timestamp_custom('%H:%M %d %b') }}_ - {{ e.summary }}{{ icon }}
+{% endfor %}
+{% set latest_img = state_attr(s, cam ~ '_image') %}
+{% if latest_img %}<a href="{{ latest_img }}?t={{ now().timestamp() | int }}" target="_blank"><img src="{{ latest_img }}?t={{ now().timestamp() | int }}" style="width:100%;max-width:480px;border-radius:8px"></a>{% endif %}
+{% else %}
+- _{{ as_timestamp(state_attr(s, cam ~ '_last')) | timestamp_custom('%H:%M %d %b') }}_ - {{ state_attr(s, cam ~ '_last_summary') }}
+{% endif %}
 ---
 {% endif %}
 {% endfor %}
+_✅ Pro confirmed · ❌ Pro rejected · ⚠️ Pro error_
 {% else %}
 *No farm detections recorded yet*
 {% endif %}

@@ -317,7 +317,7 @@ $visionView = @{
 {% for cam in cams %}
 {% set cnt = state_attr(s, cam ~ '_count') | int(0) %}
 {% if cnt > 0 %}
-**{{ cam }}** — {{ state_attr(s, cam ~ '_last_summary') }}
+**{{ cam }}** - {{ state_attr(s, cam ~ '_last_summary') }}
 _{{ as_timestamp(state_attr(s, cam ~ '_last')) | timestamp_custom('%H:%M %d %b') }}_
 {% set img = state_attr(s, cam ~ '_image') %}
 {% if img %}<a href="{{ img }}?t={{ now().timestamp() | int }}" target="_blank"><img src="{{ img }}?t={{ now().timestamp() | int }}" style="width:100%;max-width:480px;border-radius:8px"></a>{% endif %}
